@@ -128,8 +128,9 @@ struct Snapshot: Codable {
 
 final class Store {
     let dir: URL
-    init(dir: URL) {
-        self.dir = dir
+    init(dir: URL) { self.dir = dir }
+    /// Made on the first write only: reading the state never creates anything.
+    func ensureDir() {
         try? FileManager.default.createDirectory(at: dir.appendingPathComponent("backups"), withIntermediateDirectories: true)
     }
     var snapURL: URL { dir.appendingPathComponent("snapshot.json") }
@@ -142,6 +143,7 @@ final class Store {
         catch { return .broken("\(error)") }
     }
     func write(_ s: Snapshot) throws {
+        ensureDir()
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
         try e.encode(s).write(to: snapURL, options: .atomic)
     }
@@ -154,10 +156,12 @@ final class Store {
         (try? JSONDecoder().decode([String: Bool].self, from: Data(contentsOf: choicesURL))) ?? [:]
     }
     func saveChoices(_ c: [String: Bool]) {
+        ensureDir()
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
         try? e.encode(c).write(to: choicesURL, options: .atomic)
     }
     func log(_ s: String) {
+        ensureDir()
         let line = "\(stamp()) \(s)\n"
         let u = dir.appendingPathComponent("log.txt")
         if let h = try? FileHandle(forWritingTo: u) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
@@ -206,6 +210,8 @@ func automationStatus() -> OSStatus {
     defer { AEDisposeDesc(&addr) }
     return AEDeterminePermissionToAutomateTarget(&addr, AEEventClass(typeWildCard), AEEventID(typeWildCard), false)
 }
+
+func noApp(_ s: String) -> String { s.hasSuffix(".app") ? String(s.dropLast(4)) : s }
 
 /// The outermost app in a path: "/Applications/Zoom.app/Contents/.../ZoomUpdater" -> "Zoom".
 func appName(inPath p: String) -> String? {
@@ -429,7 +435,8 @@ final class Engine {
             let files = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".plist") }.sorted()
             for f in files {
                 let path = "\(dir)/\(f)"
-                let p = (NSDictionary(contentsOfFile: path) as? [String: Any]) ?? [:]
+                let read = NSDictionary(contentsOfFile: path) as? [String: Any]
+                let p = read ?? [:]
                 let label = (p["Label"] as? String) ?? String(f.dropLast(6))
                 if isApple(label, path) { r.appleCount += 1; continue }
                 let args = (p["ProgramArguments"] as? [String]) ?? []
@@ -443,7 +450,8 @@ final class Engine {
                 i.trigger = trigger(p, start: mech == .system ? "at boot" : "at login")
                 let ov = mech == .system ? ovSys : ovGUI
                 if let disabled = ov[label] { i.on = !disabled } else { i.on = !((p["Disabled"] as? Bool) ?? false) }
-                if p.isEmpty { i.notes.append("the plist could not be read") }
+                if read == nil { i.notes.append("the plist could not be read") }
+                else if p.isEmpty { i.notes.append("empty plist: launchd has nothing to start here") }
                 if let b, !b.allowed { i.notes.append("also off in System Settings › Login Items") }
                 if mech == .gui, running.contains(label) { i.running = true }
                 if mech == .gui, let s = p["LimitLoadToSessionType"] {
@@ -486,8 +494,9 @@ final class Engine {
                 let id = "login:\(path.hasSuffix("/") ? String(path.dropLast()) : path)"
                 let clean = id.dropFirst(6)
                 if clean.hasPrefix("/System/") { r.appleCount += 1; continue }
-                var i = StartItem(id: id, name: b.name ?? appName(inPath: path) ?? path,
-                                  owner: b.developerName ?? b.name ?? "", kind: .openAtLogin, mech: .loginItem,
+                let shown = noApp(b.name ?? appName(inPath: path) ?? path)
+                var i = StartItem(id: id, name: shown,
+                                  owner: b.developerName ?? shown, kind: .openAtLogin, mech: .loginItem,
                                   label: b.bundleIdentifier ?? "", path: String(clean))
                 i.trigger = "at login"
                 i.on = true
@@ -532,7 +541,6 @@ final class Engine {
                               mech: .readOnly, label: bundle, path: c[5])
             i.trigger = "at boot (\(section))"
             i.on = c[0] == "*"
-            i.readOnlyWhy = "macOS lets only System Settings › General › Login Items & Extensions switch an extension."
             i.settingsURL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
             add(i)
         }

@@ -189,7 +189,7 @@ struct ModeBlock: View {
             let kept = pool.filter { $0.on && $0.choice == true }.count
             return "Now: CLEAN START. \(pool.count - on) items stay off at the next start" + (kept > 0 ? "; \(kept) kept on by your choice." : ".")
         case .normal:
-            var t = "Now: NORMAL START. \(on) of \(pool.count) items start by themselves" + (pool.count - on > 0 ? "; \(pool.count - on) are off." : ".")
+            var t = "Now: NORMAL START. \(on) of \(pool.count) items start by themselves" + (pool.count - on > 0 ? "; \(pool.count - on) \(pool.count - on == 1 ? "is" : "are") off." : ".")
             if s.snapshotActive { t += " CLEAN START was set, but \(s.stillOn) item\(s.stillOn == 1 ? " is" : "s are") on again." }
             return t
         }
@@ -276,7 +276,6 @@ struct RowView: View {
         if let c = item.choice { l.append(("your choice: \(c ? "on" : "off"), kept in both modes", Palette.green)) }
         for n in item.notes { l.append((n, Palette.grey)) }
         if item.running { l.append((item.on ? "running now" : "switched off; still running now, until you restart", item.on ? Palette.grey : Palette.amber)) }
-        if item.locked && item.switchable { l.append(("locked: test mode", Palette.amber)) }
         if let w = item.readOnlyWhy { l.append((w, Palette.grey)) }
         return l
     }
@@ -286,7 +285,7 @@ struct RowView: View {
             Group {
                 if item.switchable {
                     Toggle("", isOn: Binding(get: { item.on }, set: { m.set(item, $0) }))
-                        .toggleStyle(.switch).labelsHidden().controlSize(.small)
+                        .toggleStyle(.switch).labelsHidden().controlSize(.small).tint(Palette.green)
                         .disabled(item.locked || m.busy)
                         .accessibilityLabel("\(item.name) starts by itself")
                         .accessibilityIdentifier("item.\(item.id)")
@@ -299,7 +298,7 @@ struct RowView: View {
                     Text("SHOWN").font(mono(10, .bold)).foregroundColor(Palette.dark).padding(.top, 3)
                 }
             }
-            .frame(width: 66, alignment: .leading)
+            .frame(width: 60, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name).font(mono(12, .bold)).foregroundColor(item.on ? Palette.white : Palette.grey)
                     .fixedSize(horizontal: false, vertical: true)
