@@ -22,3 +22,16 @@ Every mistake met on the way, and what it taught. Newest last.
    the shot and the window alike.
 9. **21.11.2026, `sips -c --cropOffset` does not crop from the top as expected** when slicing tall screenshots; PIL crops
    did. Look at the top of a shot before judging it.
+10. **21.11.2026 (Fable's score 7/10 for v2), half a press is worse than none.** v2 switched the gui items first and asked
+    for the password after: a cancel left Marko half clean. Now the administrator step comes first, a missing permission is
+    asked about before anything changes, and every change is read back from launchd before it is counted.
+11. **21.11.2026, a test mode must not hide the updater.** v2 skipped the updater in test mode and activated itself in real
+    mode, so the update could not be proven without taking focus. From v3 `CLEANSTART_TEST_UPDATE=1` runs it quietly; the
+    proof had to go v3 → v4 instead of v2 → v3.
+12. **21.11.2026, the main queue is not served while NSAlert.runModal runs.** A `DispatchQueue.main.asyncAfter` print never
+    came; a Timer added to `.modalPanel` does. The alert itself is placed by AppKit on the main screen (the BenQ).
+13. **21.11.2026, read-only beats locked.** v4 showed LOCKED on system extensions in test mode; a row that has no switch
+    shows SETTINGS/SHOWN in every mode.
+14. **21.11.2026, inactive windows grey every switch.** The state is said in words beside the switch (ON green, OFF grey),
+    which keep their colour.
+15. **21.11.2026, zsh does not split a command kept in a variable** (`AX="python3 ax.py"; $AX` fails): use a function.

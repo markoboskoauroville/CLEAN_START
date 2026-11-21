@@ -64,6 +64,24 @@ developer group, 0x40 Spotlight, 0x800 Quick Look, 0x10000 legacy (a plist file)
 - **cron @reboot, login hooks, StartupItems**: shown read only; none exist on this Mac (21.11.2026). The root crontab
   cannot be read without a password and is not listed.
 
+## A press is all or nothing (v3, from Fable's score of v2)
+
+Order of every apply (`Engine.apply`): (1) if Open at Login apps would change and Automation of System Events is
+missing, NOTHING changes and the window asks "Switch the rest and leave them as they are?" (SWITCH THE REST | CANCEL;
+`--skip-login-items` on the command line); (2) the administrator step FIRST, one prompt for every system item: refused
+or failed = nothing at all is changed, the status line says so; (3) your launchd domain; (4) Open at Login apps. Every
+launchd change is read back from `launchctl print-disabled` before it is counted: the status line says "N of M switched;
+K did not: name (reason)", green when all went well, amber when not, and the mode shown is read back from launchd.
+CLEAN writes the snapshot before the prompt but marks it active only once something really changed; NORMAL leaves it
+active until every item is back.
+
+A row whose program (or the script given to a shell or interpreter) is not on disk says "program missing: <path>" in
+amber; nothing is changed or removed. On this Mac: the daemon com.love.russia.plist runs `/bin/bash /Users/markobosko/.start`
+as root with KeepAlive, and that file does not exist.
+
+The left column of every row says what the row is, in words that keep their colour in an inactive window: a switch with
+ON (green) / OFF (grey) under it; LOCKED (test mode, amber); SETTINGS or SHOWN with on/off for read-only rows.
+
 ## The snapshot (format 1)
 
 `~/Library/Application Support/Clean Start (Mantra)/` (made on the first write; reading never creates it):
@@ -97,6 +115,20 @@ Test mode (never touches a real item):
     export CLEANSTART_TEST_FRAME=1500,420,860,800                    # window frame (MacBook screen), no autosave
     export CLEANSTART_EXPAND=1                                       # every group open
 
+More test hooks (v3+, test mode only): `CLEANSTART_TEST_SYSDIR` (dummy plists treated as system items, so the root step
+is exercised), `CLEANSTART_TEST_ROOT=cancel` (a refused password, simulated), `CLEANSTART_TEST_FAIL=<label,...>` (a
+launchctl failure, simulated), `CLEANSTART_TEST_PERMISSION=missing` (PERMISSIONS shown; its click only writes what it
+would open), `CLEANSTART_TEST_LOGIN=1` (one fake Open at Login dummy; System Events is never called in test mode),
+`CLEANSTART_TEST_UPDATE=1` (the updater runs: no activation, the installed copy is not reopened).
+`python3 tools/ax.py <pid> list|press <id>|status` drives the window by AXPress only (no mouse, no focus).
+
+AX labels and identifiers: `clean` "Clean start: switch every item off for the next start" · `normal` "Normal start: bring
+back what was on before" · `version` "Version N, open the latest release" · `permissions` "Permissions: allow Automation
+of System Events" · `group.<kind>` "<Group>, N items, M on, open/closed" · `item.<key>` (AXCheckBox) "<name> starts by
+itself" · `settings.<key>` "Open System Settings for <name>" · `confirm.yes` "Switch the rest, leave the Open at Login
+apps as they are" · `confirm.no` "Cancel, change nothing" · status lines `status`, the question `confirm.question`.
+The updater's alert: `action-button-1` Update, `action-button-2` Later.
+
 In test mode everything real is listed and locked, the updater does not run, the window is not activated, and CLEAN /
 NORMAL also write `would-run-clean.sh` / `would-run-normal.sh` into the state folder: the exact commands a real press
 would run on the real items (gui launchctl lines, the System Events scripts, the one root command), NOT run.
@@ -115,7 +147,8 @@ workflow zips it and makes release vN marked Latest. NEVER build on the Mac. Ins
     gh release download --repo markoboskoauroville/CLEAN_START --pattern app.zip -D <scratch> --clobber
     ditto -x -k <scratch>/app.zip /Applications && codesign --force -s "Mantra Apps" "/Applications/Clean Start (Mantra).app"
 
-From v2 on, a running copy asks to update by itself.
+From v2 on, a running copy asks to update by itself. Proven v3 → v4 and v4 → v5 (21.11.2026): the question shown, Update
+pressed by AXPress, the installed copy became the new version, signed "Mantra Apps" (leaf 3411F707…), bundle id kept.
 
 Icon: CLE / STA over the power symbol on the black tile (icon/README.md, icon/six_1024.png). Bundle id
 `com.mantra.cleanstart`. Version: `let VERSION = N` in app/App.swift, whole numbers.
@@ -138,8 +171,8 @@ daemons inside apps 1 · system extensions 12 (read only) · other 0 · Apple it
 ## Not yet proven
 
 - A real CLEAN / NORMAL on Marko's real items, and a real login after it. Only dummies were switched.
-- The administrator prompt path (`do shell script … with administrator privileges`) was built and its exact command
-  written to would-run-clean.sh, never run.
+- The real administrator prompt (`do shell script … with administrator privileges`) was never shown; its refusal was
+  simulated in test mode and the exact command written to would-run-root.sh / would-run-clean.sh.
 - System Events delete/re-add of Open at Login apps: the scripts were written, never run. Reading the list through
   System Events (paths and hidden flags) matched the BTM list exactly.
 - That `launchctl disable gui/<uid>/<id>` stops an SMAppService login item at the next login (launchd documents the off
