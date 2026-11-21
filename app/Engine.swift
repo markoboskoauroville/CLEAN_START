@@ -376,6 +376,7 @@ final class Engine {
     let testRoot: String?         // test: "cancel" simulates a refused administrator password
     let testFail: Set<String>     // test: labels whose launchctl line is made to fail (simulated, not run)
     let testPermissionMissing: Bool
+    let testLogin: Bool           // test: one fake Open at Login dummy (System Events is never called in test mode)
     let store: Store
     var isTest: Bool { testPrefix != nil }
 
@@ -388,6 +389,7 @@ final class Engine {
         testRoot = prefix == nil ? nil : env["CLEANSTART_TEST_ROOT"]
         testFail = prefix == nil ? [] : Set((env["CLEANSTART_TEST_FAIL"] ?? "").split(separator: ",").map(String.init))
         testPermissionMissing = prefix != nil && env["CLEANSTART_TEST_PERMISSION"] == "missing"
+        testLogin = prefix != nil && env["CLEANSTART_TEST_LOGIN"] == "1"
         let support = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/\(APP_NAME)")
         if let d = env["CLEANSTART_STATE_DIR"], !d.isEmpty, prefix != nil { store = Store(dir: URL(fileURLWithPath: d)) }
@@ -541,6 +543,13 @@ final class Engine {
             i.trigger = "when an app asks for it"
             i.on = !(ovSys[label] ?? false)
             if !b.allowed { i.notes.append("also off in System Settings › Login Items") }
+            add(i)
+        }
+
+        if testLogin, let t = testPrefix {
+            var i = StartItem(id: "login:/private/tmp/\(t)loginapp.app", name: "\(t)loginapp", owner: "test", kind: .test,
+                              mech: .loginItem, label: "", path: "/private/tmp/\(t)loginapp.app")
+            i.trigger = "at login"; i.on = true
             add(i)
         }
 
@@ -707,6 +716,7 @@ final class Engine {
         }
         // 3. Open at Login apps
         for c in logins {
+            if isTest { o.failed.append("\(c.item.name) (test mode: System Events script written, not run)"); continue }
             let r = appleScript(loginScript(c))
             store.log("login \(c.to ? "add" : "remove") \(c.item.path) -> \(r.ok ? "ok" : (r.error ?? "?"))")
             if r.ok { o.changed += 1 } else { o.failed.append("\(c.item.name) (\(r.error ?? "System Events refused"))") }

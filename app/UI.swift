@@ -234,7 +234,9 @@ struct ModeBlock: View {
                     .font(mono(11, .bold)).foregroundColor(Palette.amber).fixedSize(horizontal: false, vertical: true)
             }
             ForEach(Array((m.status + s.problems).enumerated()), id: \.offset) { _, line in
-                Text(line).font(.system(size: 11)).foregroundColor(Palette.amber).fixedSize(horizontal: false, vertical: true)
+                let bad = line.contains("did not") || line.hasPrefix("Nothing changed") || line.contains("refused")
+                    || line.hasPrefix("Left as") || line.contains("not changed") || line.contains("cannot")
+                Text(line).font(.system(size: 11)).foregroundColor(bad ? Palette.amber : Palette.green).fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("status")
             }

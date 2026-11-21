@@ -11,11 +11,11 @@
 // plists>, CLEANSTART_STATE_DIR=<dir> (snapshot and choices kept apart from the real ones), CLEANSTART_TEST_FRAME=x,y,w,h,
 // CLEANSTART_TEST_SYSDIR=<dir> (dummies as system items: the root step), CLEANSTART_TEST_ROOT=cancel (refused password,
 // simulated), CLEANSTART_TEST_FAIL=<label,...> (launchctl failure, simulated), CLEANSTART_TEST_PERMISSION=missing,
-// CLEANSTART_TEST_UPDATE=1 (the updater runs in test mode: no activation, the new copy is not opened).
+// CLEANSTART_TEST_LOGIN=1 (one fake Open at Login dummy), CLEANSTART_TEST_UPDATE=1 (the updater runs in test mode: no activation, the new copy is not opened).
 import AppKit
 import SwiftUI
 
-let VERSION = 3
+let VERSION = 4
 let APP_NAME = "Clean Start (Mantra)"
 let RELEASES = "https://github.com/markoboskoauroville/CLEAN_START/releases/latest"
 
@@ -72,6 +72,7 @@ func statusJSON(_ s: ScanResult, _ e: Engine) -> String {
                                 "on": i.on, "switchable": i.switchable, "locked": i.locked, "path": i.path, "trigger": i.trigger]
         if let c = i.choice { d["choice"] = c }
         if !i.notes.isEmpty { d["notes"] = i.notes }
+        if !i.warnings.isEmpty { d["warnings"] = i.warnings }
         return d
     }
     var counts: [String: Int] = [:]
