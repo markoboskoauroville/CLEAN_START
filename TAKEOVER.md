@@ -3,6 +3,14 @@
 Public and unpromoted repository: no README and no description (MANTRA_MANIFEST repo-privacy.md). Everything about the
 app is in this file. Requests word for word: `momentaryupdates.md`. Mistakes and what they taught: `LESSONS.md`.
 
+## Status: CLOSED 21.11.2026
+
+v5 installed, release Latest, Fable score 9 of 10 (v2 scored 7; seven corrections). Waiting for Marko: (1) the real test,
+CLEAN START, restart, look, NORMAL START, restart; (2) the root daemon `com.love.russia.plist` points at the missing
+`/Users/markobosko/.start`; (3) whether the Path Finder and iBoysoft helpers stay on by default in a Clean (his cracked apps:
+the app does not decide for him); (4) Queen's clean-start skill is installed (queen_skills/clean-start.md) but her chat
+route gave 502, so it is not yet tried in her chat.
+
 ## What it is
 
 A Mac app (Swift, macOS 14+, written for Marko's macOS 15 on Apple silicon) with one window:

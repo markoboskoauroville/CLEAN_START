@@ -35,3 +35,8 @@ Every mistake met on the way, and what it taught. Newest last.
 14. **21.11.2026, inactive windows grey every switch.** The state is said in words beside the switch (ON green, OFF grey),
     which keep their colour.
 15. **21.11.2026, zsh does not split a command kept in a variable** (`AX="python3 ax.py"; $AX` fails): use a function.
+16. **21.11.2026, a score cannot reach 10 on what only Marko's hand proves.** The real administrator password dialog, real
+    System Events changes and a real login after a Clean are his to press and restart; v5 stays at 9 of 10 and says so.
+17. **21.11.2026, the master's first plan missed the order of a press.** It did not say the administrator step comes first;
+    it was found only at scoring (lesson 10). A plan for anything that changes system state names what happens when the
+    user cancels half way.
