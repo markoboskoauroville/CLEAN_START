@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Clean Start (Mantra)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Clean Start (Mantra)</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.mantra.cleanstart</string>
+	<key>CFBundleExecutable</key>
+	<string>Clean Start (Mantra)</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Clean Start (Mantra) takes the apps that open at login out of System Events' login items for a clean start, and puts them back for a normal start.</string>
+</dict>
+</plist>
