@@ -77,7 +77,9 @@ enum Updater {
         a.addButton(withTitle: "Later")
         if let icon = NSImage(contentsOf: newApp.appendingPathComponent("Contents/Resources/AppIcon.icns")) { a.icon = icon }
         if quiet {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { print("alert \(NSApp.modalWindow?.windowNumber ?? -1)"); fflush(stdout) }
+            // a Timer in the modal run-loop mode: the main queue is not served while runModal runs (v3 printed nothing)
+            let t = Timer(timeInterval: 1, repeats: false) { _ in print("alert \(NSApp.modalWindow?.windowNumber ?? -1)"); fflush(stdout) }
+            RunLoop.main.add(t, forMode: .modalPanel)
         }
         guard a.runModal() == .alertFirstButtonReturn else { log("v\(v): later"); return }
         install(newApp)

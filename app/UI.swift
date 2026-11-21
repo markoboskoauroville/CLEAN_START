@@ -325,7 +325,7 @@ struct RowView: View {
                         .accessibilityIdentifier("item.\(item.id)")
                     Text(item.on ? "ON" : "OFF").font(mono(10, .bold)).foregroundColor(item.on ? Palette.green : Palette.grey)
                         .accessibilityHidden(true)
-                } else if item.locked {
+                } else if item.locked && item.switchable {
                     Text("LOCKED").font(mono(10, .bold)).foregroundColor(Palette.amber.opacity(0.75)).padding(.top, 2)
                         .accessibilityLabel("\(item.name): locked in test mode, \(item.on ? "on" : "off")")
                     Text(item.on ? "on" : "off").font(mono(10)).foregroundColor(Palette.grey)

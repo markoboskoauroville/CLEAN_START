@@ -15,7 +15,7 @@
 import AppKit
 import SwiftUI
 
-let VERSION = 4
+let VERSION = 5
 let APP_NAME = "Clean Start (Mantra)"
 let RELEASES = "https://github.com/markoboskoauroville/CLEAN_START/releases/latest"
 
