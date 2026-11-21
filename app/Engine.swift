@@ -77,6 +77,7 @@ struct StartItem: Identifiable {
     var trigger: String = ""
     var on: Bool = true
     var notes: [String] = []
+    var warnings: [String] = []   // amber: something is wrong with the item itself (program missing)
     var readOnlyWhy: String? = nil
     var settingsURL: String? = nil
     var hidden: Bool = false
@@ -98,9 +99,10 @@ struct ScanResult {
     var stillOn = 0              // items that would keep starting although CLEAN is set
     var automation: OSStatus = noErr
     var problems: [String] = []
+    var forcePermission = false   // test flag CLEANSTART_TEST_PERMISSION=missing
     var groups: [Kind] { Kind.allCases.filter { k in items.contains { $0.kind == k } } }
     var needsAutomation: Bool {
-        items.contains { $0.mech == .loginItem && $0.changeable } && automation != noErr
+        forcePermission || items.contains { $0.mech == .loginItem && $0.changeable } && automation != noErr
     }
 }
 
@@ -237,6 +239,21 @@ func vendor(fromLabel l: String) -> String {
     return v.prefix(1).uppercased() + v.dropFirst()
 }
 
+/// The program of a launchd job, or the script an interpreter is told to run, when it is not on disk. Never changes anything.
+func missingProgram(_ program: String, _ args: [String], home: String) -> String? {
+    let fm = FileManager.default
+    if program.hasPrefix("/") && !fm.fileExists(atPath: program) { return program }
+    let base = (program as NSString).lastPathComponent
+    let shells: Set<String> = ["bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "perl", "ruby", "node", "osascript", "php"]
+    guard shells.contains(base) || base.hasPrefix("python") else { return nil }
+    let rest = Array(args.dropFirst())
+    if rest.contains("-c") || rest.contains("-e") || rest.contains("-m") { return nil }   // inline code or a module
+    guard let script = rest.first(where: { !$0.hasPrefix("-") }) else { return nil }
+    let path = script.hasPrefix("~/") ? home + script.dropFirst(1) : script
+    guard path.hasPrefix("/") else { return nil }
+    return fm.fileExists(atPath: path) ? nil : script
+}
+
 // MARK: - Background Task Management database
 
 @objc(CSBTMItem) final class BTMItem: NSObject, NSCoding {
@@ -355,6 +372,10 @@ final class Engine {
     let uid = getuid()
     let testPrefix: String?
     let testDir: String?
+    let testSysDir: String?       // test: dummy plists treated as system-domain items (root step), never really run
+    let testRoot: String?         // test: "cancel" simulates a refused administrator password
+    let testFail: Set<String>     // test: labels whose launchctl line is made to fail (simulated, not run)
+    let testPermissionMissing: Bool
     let store: Store
     var isTest: Bool { testPrefix != nil }
 
@@ -363,6 +384,10 @@ final class Engine {
         let prefix = env["CLEANSTART_TEST_PREFIX"].flatMap { $0.isEmpty ? nil : $0 }
         testPrefix = prefix
         testDir = env["CLEANSTART_TEST_DIR"].flatMap { $0.isEmpty ? nil : $0 }
+        testSysDir = prefix == nil ? nil : env["CLEANSTART_TEST_SYSDIR"].flatMap { $0.isEmpty ? nil : $0 }
+        testRoot = prefix == nil ? nil : env["CLEANSTART_TEST_ROOT"]
+        testFail = prefix == nil ? [] : Set((env["CLEANSTART_TEST_FAIL"] ?? "").split(separator: ",").map(String.init))
+        testPermissionMissing = prefix != nil && env["CLEANSTART_TEST_PERMISSION"] == "missing"
         let support = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/\(APP_NAME)")
         if let d = env["CLEANSTART_STATE_DIR"], !d.isEmpty, prefix != nil { store = Store(dir: URL(fileURLWithPath: d)) }
@@ -431,6 +456,7 @@ final class Engine {
             ("/Library/LaunchDaemons", .daemon, .system),
         ]
         if let t = testDir { dirs.insert((t, .test, .gui), at: 0) }
+        if let t = testSysDir { dirs.insert((t, .test, .system), at: 0) }
         for (dir, kind, mech) in dirs {
             let files = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".plist") }.sorted()
             for f in files {
@@ -450,6 +476,7 @@ final class Engine {
                 i.trigger = trigger(p, start: mech == .system ? "at boot" : "at login")
                 let ov = mech == .system ? ovSys : ovGUI
                 if let disabled = ov[label] { i.on = !disabled } else { i.on = !((p["Disabled"] as? Bool) ?? false) }
+                if let gone = missingProgram(program, args, home: home) { i.warnings.append("program missing: \(gone)") }
                 if read == nil { i.notes.append("the plist could not be read") }
                 else if p.isEmpty { i.notes.append("empty plist: launchd has nothing to start here") }
                 if let b, !b.allowed { i.notes.append("also off in System Settings › Login Items") }
@@ -500,6 +527,7 @@ final class Engine {
                                   label: b.bundleIdentifier ?? "", path: String(clean))
                 i.trigger = "at login"
                 i.on = true
+                if !FileManager.default.fileExists(atPath: i.path) { i.warnings.append("app missing: \(i.path)") }
                 add(i)
             }
         }
@@ -599,6 +627,7 @@ final class Engine {
         r.stillOn = pool.filter { $0.on && $0.choice != true }.count
         r.mode = (!pool.isEmpty && r.stillOn == 0) ? .clean : .normal
         r.automation = items.contains { $0.mech == .loginItem } ? automationStatusStartingSystemEvents() : noErr
+        if testPermissionMissing { r.automation = -1744; r.forcePermission = true }
         return r
     }
 
@@ -606,46 +635,89 @@ final class Engine {
 
     struct Change { var item: StartItem; var to: Bool }
 
-    /// Applies the changes; returns lines for the window and the log.
-    func apply(_ changes: [Change]) -> [String] {
-        var msgs: [String] = []
+    /// What a press did. All or nothing up to the first real change: a refused password or a missing permission
+    /// stops it before anything is touched.
+    struct Outcome {
+        var lines: [String] = []
+        var confirm: String? = nil      // asked in the window before anything changes ("switch the rest?")
+        var changed = 0
+        var failed: [String] = []
+        var aborted = false
+    }
+
+    func automationMissing() -> Bool { testPermissionMissing || automationStatusStartingSystemEvents() != noErr }
+
+    /// Applies the changes in a safe order: the administrator step FIRST (refused = nothing at all is changed), then your
+    /// launchd domain, then the Open at Login apps. Every launchd change is read back from launchd before it is counted.
+    func apply(_ changes: [Change], skipLogins: Bool) -> Outcome {
+        var o = Outcome()
         let real = changes.filter { $0.item.changeable && $0.item.on != $0.to }
-        // launchd, your domain: no password
-        for c in real where c.item.mech == .gui {
-            let verb = c.to ? "enable" : "disable"
-            let r = sh("/bin/launchctl", [verb, "gui/\(uid)/\(c.item.label)"])
-            if r.status != 0 { msgs.append("\(c.item.name): launchctl \(verb) failed: \(r.out.trimmingCharacters(in: .whitespacesAndNewlines))") }
-            store.log("gui \(verb) \(c.item.label) -> \(r.status)")
+        var logins = real.filter { $0.item.mech == .loginItem }
+        if !logins.isEmpty && automationMissing() {
+            let names = logins.map { $0.item.name }.joined(separator: ", ")
+            if !skipLogins {
+                o.aborted = true
+                o.confirm = "Nothing changed yet. \(logins.count) Open at Login app\(logins.count == 1 ? "" : "s") (\(names)) cannot be switched without PERMISSIONS (Automation of System Events). Switch the rest and leave \(logins.count == 1 ? "it" : "them") as \(logins.count == 1 ? "it is" : "they are")?"
+                return o
+            }
+            o.lines.append("Left as they are (no Automation permission): \(names).")
+            logins = []
         }
-        // launchd, system domain: one administrator prompt for all of them
+        // 1. root, one prompt, before anything else
         let sys = real.filter { $0.item.mech == .system }
         if !sys.isEmpty {
             let cmd = rootCommand(sys)
+            var ok = false, why = ""
             if isTest {
+                try? FileManager.default.createDirectory(at: store.dir, withIntermediateDirectories: true)
                 try? cmd.write(to: store.dir.appendingPathComponent("would-run-root.sh"), atomically: true, encoding: .utf8)
-                msgs.append("Test mode: the root command was written, not run.")
+                if testRoot == "cancel" { why = "the administrator password was not given (test: simulated cancel; the command was written, not run)" }
+                else { ok = true }
             } else {
                 let src = "do shell script \"\(asq(cmd))\" with administrator privileges with prompt \"\(APP_NAME) switches \(sys.count) system item\(sys.count == 1 ? "" : "s") for the next start.\""
                 let r = appleScript(src)
-                store.log("system \(sys.count) items -> \(r.ok ? "ok" : (r.error ?? "?"))")
-                if !r.ok { msgs.append("System items not changed: \(r.error ?? "the password was not given").") }
+                ok = r.ok
+                why = (r.error ?? "").contains("cancel") || (r.error ?? "").contains("-128") ? "the administrator password was not given" : (r.error ?? "the administrator step failed")
+            }
+            store.log("system \(sys.count) items -> \(ok ? "ok" : why)")
+            if !ok {
+                o.aborted = true
+                o.lines.append("Nothing changed: \(why).")
+                return o
             }
         }
-        // Open at Login apps: System Events
-        let logins = real.filter { $0.item.mech == .loginItem }
-        if !logins.isEmpty {
-            if automationStatusStartingSystemEvents() != noErr {
-                msgs.append("\(logins.count) Open at Login app\(logins.count == 1 ? "" : "s") not changed: PERMISSIONS (Automation of System Events) is needed.")
-            } else {
-                for c in logins {
-                    let src = loginScript(c)
-                    let r = appleScript(src)
-                    store.log("login \(c.to ? "add" : "remove") \(c.item.path) -> \(r.ok ? "ok" : (r.error ?? "?"))")
-                    if !r.ok { msgs.append("\(c.item.name): \(r.error ?? "System Events refused")") }
-                }
+        // 2. your launchd domain
+        for c in real where c.item.mech == .gui {
+            let verb = c.to ? "enable" : "disable"
+            if testFail.contains(c.item.label) {
+                store.log("gui \(verb) \(c.item.label) -> simulated failure (test)")
+                continue
             }
+            let r = sh("/bin/launchctl", [verb, "gui/\(uid)/\(c.item.label)"])
+            store.log("gui \(verb) \(c.item.label) -> \(r.status)")
         }
-        return msgs
+        // read every launchd change back
+        let ovG = overrides("gui/\(uid)"), ovS = overrides("system")
+        for c in real where c.item.mech == .gui || c.item.mech == .system {
+            let ov = c.item.mech == .gui ? ovG : ovS
+            if let disabled = ov[c.item.label], disabled == !c.to { o.changed += 1 }
+            else if isTest && c.item.mech == .system { o.failed.append("\(c.item.name) (test mode: root command written, not run)") }
+            else if testFail.contains(c.item.label) { o.failed.append("\(c.item.name) (launchctl failed: simulated by the test)") }
+            else { o.failed.append("\(c.item.name) (launchd still has it \(c.to ? "off" : "on"))") }
+        }
+        // 3. Open at Login apps
+        for c in logins {
+            let r = appleScript(loginScript(c))
+            store.log("login \(c.to ? "add" : "remove") \(c.item.path) -> \(r.ok ? "ok" : (r.error ?? "?"))")
+            if r.ok { o.changed += 1 } else { o.failed.append("\(c.item.name) (\(r.error ?? "System Events refused"))") }
+        }
+        return o
+    }
+
+    func summary(_ what: String, _ o: Outcome, total: Int, verb: String) -> [String] {
+        var l = ["\(what): \(o.changed) of \(total) \(verb) for the next start" + (o.failed.isEmpty ? "." : "; \(o.failed.count) did not: \(o.failed.joined(separator: ", ")).")]
+        if what == "CLEAN START", o.changed > 0 { l[0] += " What runs now keeps running until you restart." }
+        return l + o.lines
     }
 
     func rootCommand(_ sys: [Change]) -> String {
@@ -660,7 +732,7 @@ final class Engine {
 
     /// path -> hidden, from System Events (only with the Automation permission).
     func loginHidden() -> [String: Bool] {
-        guard automationStatusStartingSystemEvents() == noErr else { return [:] }
+        guard !automationMissing() else { return [:] }
         let r = appleScript("tell application \"System Events\" to get {path, hidden} of every login item")
         guard r.ok, let d = r.result, d.numberOfItems >= 2, let ps = d.atIndex(1), let hs = d.atIndex(2) else { return [:] }
         var m: [String: Bool] = [:]
@@ -672,17 +744,27 @@ final class Engine {
         return m
     }
 
-    /// CLEAN START: snapshot first (never overwritten while a Clean is in force), then every item off except his ON choices.
-    func clean() -> [String] {
+    /// CLEAN START. The snapshot is written first (a Clean in force never overwrites the "before"), the press is all or
+    /// nothing up to the first change, and the snapshot is marked active only once something really changed.
+    func clean(skipLogins: Bool = false) -> Outcome {
         var snap: Snapshot
         switch store.readSnapshot() {
-        case .broken(let e): return ["CLEAN START refused: snapshot.json cannot be read (\(e)). Nothing was changed."]
+        case .broken(let e): return Outcome(lines: ["CLEAN START refused: snapshot.json cannot be read (\(e)). Nothing was changed."], aborted: true)
         case .ok(let s): snap = s
         case .none: snap = Snapshot(created: stamp(), active: false, items: [:])
         }
         let s = scan()
-        let hidden = loginHidden()
         let fresh = !snap.active     // a new "before": the state now. While active, only new items are added.
+        var changes: [Change] = []
+        for i in s.items where i.changeable {
+            let target = i.choice ?? false
+            if i.on != target { changes.append(Change(item: i, to: target)) }
+        }
+        // permission question before anything is written or changed
+        if !skipLogins, changes.contains(where: { $0.item.mech == .loginItem }), automationMissing() {
+            return apply(changes, skipLogins: false)
+        }
+        let hidden = loginHidden()
         if fresh { snap.created = stamp(); snap.appVersion = VERSION }
         for i in s.items where i.changeable {
             if snap.items[i.id] == nil || (fresh && i.mech != .loginItem) || (fresh && i.mech == .loginItem && i.on) {
@@ -690,28 +772,27 @@ final class Engine {
                                              hidden: i.mech == .loginItem ? (hidden[i.path] ?? i.hidden) : nil)
             }
         }
-        snap.active = true
-        snap.lastClean = stamp()
-        do { try store.write(snap) } catch { return ["CLEAN START refused: the snapshot could not be written (\(error)). Nothing was changed."] }
+        do { try store.write(snap) } catch { return Outcome(lines: ["CLEAN START refused: the snapshot could not be written (\(error)). Nothing was changed."], aborted: true) }
         store.backup()
-        store.log("CLEAN START, snapshot \(fresh ? "new" : "kept") with \(snap.items.count) items")
-        var changes: [Change] = []
-        for var i in s.items where i.changeable {
-            if i.mech == .loginItem { i.hidden = snap.items[i.id]?.hidden ?? false }
-            let target = i.choice ?? false
-            if i.on != target { changes.append(Change(item: i, to: target)) }
-        }
+        for k in changes.indices where changes[k].item.mech == .loginItem { changes[k].item.hidden = snap.items[changes[k].item.id]?.hidden ?? false }
         if isTest { writeWouldRun(s, clean: true) }
-        var msgs = apply(changes)
-        msgs.insert("CLEAN START set for the next start: \(changes.filter { !$0.to }.count) switched off\(fresh ? "" : " (the first snapshot was kept)"). What runs now keeps running until you restart.", at: 0)
-        return msgs
+        var o = apply(changes, skipLogins: skipLogins)
+        if !o.aborted && (o.changed > 0 || changes.isEmpty) {
+            snap.active = true
+            snap.lastClean = stamp()
+            try? store.write(snap)
+        }
+        store.log("CLEAN START \(o.aborted ? "aborted, nothing changed" : "\(o.changed) changed, \(o.failed.count) failed"), snapshot \(fresh ? "new" : "kept"), active \(snap.active)")
+        if !o.aborted { o.lines = summary("CLEAN START", o, total: changes.count, verb: "switched") + (fresh ? [] : ["The first snapshot was kept."]) }
+        return o
     }
 
-    /// NORMAL START: everything back as the snapshot had it, except what he switched himself.
-    func normal() -> [String] {
+    /// NORMAL START: everything back as the snapshot had it, except what he switched himself. All or nothing up to the
+    /// first change; the snapshot stays active until every item is back.
+    func normal(skipLogins: Bool = false) -> Outcome {
         guard case .ok(var snap) = store.readSnapshot() else {
-            if case .broken(let e) = store.readSnapshot() { return ["NORMAL START refused: snapshot.json cannot be read (\(e))."] }
-            return ["Nothing to restore: CLEAN START was never pressed. Everything is as it was."]
+            if case .broken(let e) = store.readSnapshot() { return Outcome(lines: ["NORMAL START refused: snapshot.json cannot be read (\(e))."], aborted: true) }
+            return Outcome(lines: ["Nothing to restore: CLEAN START was never pressed. Everything is as it was."])
         }
         let s = scan()
         var changes: [Change] = []
@@ -721,27 +802,35 @@ final class Engine {
             if i.on != target { changes.append(Change(item: i, to: target)) }
         }
         if isTest { writeWouldRun(s, clean: false, snap: snap) }
-        var msgs = apply(changes)
-        snap.active = false
-        snap.lastNormal = stamp()
-        try? store.write(snap)
-        store.log("NORMAL START, \(changes.count) changes")
-        msgs.insert("NORMAL START set for the next start: \(changes.filter { $0.to }.count) switched back on.", at: 0)
-        return msgs
+        var o = apply(changes, skipLogins: skipLogins)
+        if !o.aborted && o.failed.isEmpty {
+            snap.active = false
+            snap.lastNormal = stamp()
+            try? store.write(snap)
+        }
+        store.log("NORMAL START \(o.aborted ? "aborted, nothing changed" : "\(o.changed) changed, \(o.failed.count) failed")")
+        if !o.aborted { o.lines = summary("NORMAL START", o, total: changes.count, verb: "switched") }
+        return o
     }
 
-    /// One switch in the list: remembered as his choice, applied at once.
-    func set(_ key: String, on: Bool) -> [String] {
+    /// One switch in the list: applied at once, then remembered as his choice (not when nothing could change).
+    func set(_ key: String, on: Bool) -> Outcome {
         let s = scan()
-        guard let i = s.items.first(where: { $0.id == key }) else { return ["\(key): not found"] }
-        guard i.changeable else { return ["\(i.name): \(i.locked ? "locked in test mode" : "cannot be switched here")"] }
-        var c = store.choices(); c[key] = on; store.saveChoices(c)
-        store.log("choice \(key) = \(on)")
+        guard let i = s.items.first(where: { $0.id == key }) else { return Outcome(lines: ["\(key): not found"], aborted: true) }
+        guard i.changeable else { return Outcome(lines: ["\(i.name): \(i.locked ? "locked in test mode" : "cannot be switched here")"], aborted: true) }
         var item = i
         if case .ok(let snap) = store.readSnapshot(), let e = snap.items[key], let h = e.hidden { item.hidden = h }
-        var msgs = apply([Change(item: item, to: on)])
-        msgs.insert("\(i.name): \(on ? "on" : "off") from the next start (your choice, kept in both modes).", at: 0)
-        return msgs
+        var o = apply([Change(item: item, to: on)], skipLogins: false)
+        if let q = o.confirm { o.confirm = nil; o.lines = [q.replacingOccurrences(of: " Switch the rest and leave it as it is?", with: "")] }
+        if o.aborted { return o }
+        if o.failed.isEmpty {
+            var c = store.choices(); c[key] = on; store.saveChoices(c)
+            store.log("choice \(key) = \(on)")
+            o.lines.insert("\(i.name): \(on ? "on" : "off") from the next start (your choice, kept in both modes).", at: 0)
+        } else {
+            o.lines.insert("\(i.name) not changed: \(o.failed.joined(separator: ", ")).", at: 0)
+        }
+        return o
     }
 
     /// Test mode only: what CLEAN or NORMAL would run on the REAL items, written next to the test state, never run.

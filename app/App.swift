@@ -5,13 +5,17 @@
 //   --status                      JSON of every item and the mode, then exit
 //   --clean | --normal            press the button headless (refused outside test mode unless --yes-real)
 //   --set <key> on|off            one switch, remembered as his choice (same rule)
+//   --skip-login-items            with --clean/--normal: switch the rest when Automation is missing (the window asks)
 //   --shot <png> [--width N]      draw the window off screen into a PNG, every group open
 // Test mode: CLEANSTART_TEST_PREFIX=<label prefix> (only labels with it are switched), CLEANSTART_TEST_DIR=<dir of dummy
-// plists>, CLEANSTART_STATE_DIR=<dir> (snapshot and choices kept apart from the real ones), CLEANSTART_TEST_FRAME=x,y,w,h.
+// plists>, CLEANSTART_STATE_DIR=<dir> (snapshot and choices kept apart from the real ones), CLEANSTART_TEST_FRAME=x,y,w,h,
+// CLEANSTART_TEST_SYSDIR=<dir> (dummies as system items: the root step), CLEANSTART_TEST_ROOT=cancel (refused password,
+// simulated), CLEANSTART_TEST_FAIL=<label,...> (launchctl failure, simulated), CLEANSTART_TEST_PERMISSION=missing,
+// CLEANSTART_TEST_UPDATE=1 (the updater runs in test mode: no activation, the new copy is not opened).
 import AppKit
 import SwiftUI
 
-let VERSION = 2
+let VERSION = 3
 let APP_NAME = "Clean Start (Mantra)"
 let RELEASES = "https://github.com/markoboskoauroville/CLEAN_START/releases/latest"
 
@@ -35,11 +39,13 @@ struct Main {
                 print("Refused: outside test mode the command line needs --yes-real. Use the window instead.")
                 exit(2)
             }
-            var msgs: [String] = []
-            if args.contains("--clean") { msgs = engine.clean() }
-            else if args.contains("--normal") { msgs = engine.normal() }
-            else if let i = args.firstIndex(of: "--set"), i + 2 < args.count { msgs = engine.set(args[i + 1], on: args[i + 2] == "on") }
-            msgs.forEach { print($0) }
+            let skip = args.contains("--skip-login-items")
+            var o = Engine.Outcome()
+            if args.contains("--clean") { o = engine.clean(skipLogins: skip) }
+            else if args.contains("--normal") { o = engine.normal(skipLogins: skip) }
+            else if let i = args.firstIndex(of: "--set"), i + 2 < args.count { o = engine.set(args[i + 1], on: args[i + 2] == "on") }
+            o.lines.forEach { print($0) }
+            if let q = o.confirm { print(q); print("(again with --skip-login-items to switch the rest)") }
             print(statusJSON(engine.scan(), engine))
             exit(0)
         }
@@ -117,7 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.async { self.enforceOneTitle() }
         if engine.isTest { print("window \(w.windowNumber)"); fflush(stdout) }
         model.refresh()
-        if !engine.isTest { Updater.checkAtStart() }
+        if !engine.isTest || env["CLEANSTART_TEST_UPDATE"] == "1" {
+            Updater.quiet = engine.isTest
+            Updater.checkAtStart()
+        }
     }
 
     /// One title only (MANTRA_MANIFEST one-title-only.md): the app draws its own; the system's stays hidden in every state.

@@ -21,6 +21,8 @@ final class Model: ObservableObject {
     @Published var scan = ScanResult()
     @Published var busy = false
     @Published var status: [String] = []
+    @Published var confirm: String? = nil      // a question before anything changes (missing permission)
+    private var pending: ((Bool) -> Engine.Outcome)? = nil
     @Published var open: Set<Kind> = []
     private var scanning = false
 
@@ -38,22 +40,39 @@ final class Model: ObservableObject {
         }
     }
 
-    private func run(_ job: @escaping () -> [String]) {
+    /// job(skipLogins). A question in the window comes back as `confirm`; nothing was changed then.
+    private func run(_ job: @escaping (Bool) -> Engine.Outcome, skip: Bool = false) {
         guard !busy else { return }
         busy = true
         status = []
+        confirm = nil
         DispatchQueue.global(qos: .userInitiated).async {
-            let msgs = job()
+            let o = job(skip)
             let s = self.engine.scan()
-            DispatchQueue.main.async { self.status = msgs; self.scan = s; self.busy = false }
+            DispatchQueue.main.async {
+                self.status = o.lines
+                self.confirm = o.confirm
+                self.pending = o.confirm == nil ? nil : job
+                self.scan = s
+                self.busy = false
+            }
         }
     }
-    func clean() { run { self.engine.clean() } }
-    func normal() { run { self.engine.normal() } }
-    func set(_ i: StartItem, _ on: Bool) { run { self.engine.set(i.id, on: on) } }
+    func clean() { run { self.engine.clean(skipLogins: $0) } }
+    func normal() { run { self.engine.normal(skipLogins: $0) } }
+    func set(_ i: StartItem, _ on: Bool) { run { _ in self.engine.set(i.id, on: on) } }
+    func answer(_ yes: Bool) {
+        guard let job = pending else { return }
+        pending = nil
+        if yes { run(job, skip: true) } else { confirm = nil; status = ["Cancelled: nothing changed."] }
+    }
 
     /// PERMISSIONS: the check is made fresh on the click; the system's own question once, then the Settings page.
     func askPermission() {
+        if engine.isTest {
+            status = ["Test mode: PERMISSIONS would ask macOS once (tell application \"System Events\" to count login items), then open x-apple.systempreferences:com.apple.preference.security?Privacy_Automation. Nothing was opened."]
+            return
+        }
         var st = automationStatusStartingSystemEvents()
         if st == -1744 { _ = appleScript("tell application \"System Events\" to count login items"); st = automationStatus() }
         if st != noErr, let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
@@ -217,6 +236,17 @@ struct ModeBlock: View {
             ForEach(Array((m.status + s.problems).enumerated()), id: \.offset) { _, line in
                 Text(line).font(.system(size: 11)).foregroundColor(Palette.amber).fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+                    .accessibilityIdentifier("status")
+            }
+            if let q = m.confirm {
+                Text(q).font(.system(size: 11, weight: .semibold)).foregroundColor(Palette.amber)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("confirm.question")
+                HStack(spacing: 10) {
+                    WordButton(word: "SWITCH THE REST", color: Palette.amber, id: "confirm.yes",
+                               label: "Switch the rest, leave the Open at Login apps as they are") { m.answer(true) }
+                    Text("|").font(mono(12)).foregroundColor(Palette.dark)
+                    WordButton(word: "CANCEL", color: Palette.grey, id: "confirm.no", label: "Cancel, change nothing") { m.answer(false) }
+                }
             }
         }
     }
@@ -268,12 +298,12 @@ struct RowView: View {
 
     var meta: String {
         var p = [item.owner, item.kind.short, item.trigger].filter { !$0.isEmpty }
-        if !item.switchable { p.append(item.on ? "on" : "off") }
         return p.joined(separator: " · ")
     }
     var lines: [(String, Color)] {
         var l: [(String, Color)] = []
         if let c = item.choice { l.append(("your choice: \(c ? "on" : "off"), kept in both modes", Palette.green)) }
+        for w in item.warnings { l.append((w, Palette.amber)) }
         for n in item.notes { l.append((n, Palette.grey)) }
         if item.running { l.append((item.on ? "running now" : "switched off; still running now, until you restart", item.on ? Palette.grey : Palette.amber)) }
         if let w = item.readOnlyWhy { l.append((w, Palette.grey)) }
@@ -282,23 +312,33 @@ struct RowView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Group {
-                if item.switchable {
+            // The left column says at a glance what the row is, in words that keep their colour in an inactive window:
+            // a switch with ON (green) / OFF (grey) under it; LOCKED (test mode); SETTINGS or SHOWN for read-only rows.
+            VStack(alignment: .leading, spacing: 3) {
+                if item.changeable {
                     Toggle("", isOn: Binding(get: { item.on }, set: { m.set(item, $0) }))
                         .toggleStyle(.switch).labelsHidden().controlSize(.small).tint(Palette.green)
-                        .disabled(item.locked || m.busy)
+                        .disabled(m.busy)
                         .accessibilityLabel("\(item.name) starts by itself")
                         .accessibilityIdentifier("item.\(item.id)")
+                    Text(item.on ? "ON" : "OFF").font(mono(10, .bold)).foregroundColor(item.on ? Palette.green : Palette.grey)
+                        .accessibilityHidden(true)
+                } else if item.locked {
+                    Text("LOCKED").font(mono(10, .bold)).foregroundColor(Palette.amber.opacity(0.75)).padding(.top, 2)
+                        .accessibilityLabel("\(item.name): locked in test mode, \(item.on ? "on" : "off")")
+                    Text(item.on ? "on" : "off").font(mono(10)).foregroundColor(Palette.grey)
                 } else if let s = item.settingsURL {
                     WordButton(word: "SETTINGS", color: Palette.grey, size: 10, id: "settings.\(item.id)",
                                label: "Open System Settings for \(item.name)") {
                         if let u = URL(string: s) { NSWorkspace.shared.open(u) }
                     }
+                    Text(item.on ? "on" : "off").font(mono(10)).foregroundColor(Palette.grey).padding(.leading, 5)
                 } else {
-                    Text("SHOWN").font(mono(10, .bold)).foregroundColor(Palette.dark).padding(.top, 3)
+                    Text("SHOWN").font(mono(10, .bold)).foregroundColor(Palette.grey.opacity(0.7)).padding(.top, 3)
+                    Text(item.on ? "on" : "off").font(mono(10)).foregroundColor(Palette.grey)
                 }
             }
-            .frame(width: 60, alignment: .leading)
+            .frame(width: 66, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.name).font(mono(12, .bold)).foregroundColor(item.on ? Palette.white : Palette.grey)
                     .fixedSize(horizontal: false, vertical: true)

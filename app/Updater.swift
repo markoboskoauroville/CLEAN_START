@@ -18,6 +18,9 @@ enum Updater {
     }
 
     static var busy = false
+    /// Clean Start test mode (CLEANSTART_TEST_UPDATE=1): no activation, the alert's window number is printed, and the
+    /// installed copy is not opened afterwards (the test opens it). Everything else is the kit unchanged.
+    static var quiet = false
     static let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"].first { FileManager.default.isExecutableFile(atPath: $0) }
     static var cache: URL {
         let id = Bundle.main.bundleIdentifier ?? APP_NAME
@@ -66,13 +69,16 @@ enum Updater {
     }
 
     static func ask(version v: Int, newApp: URL, notes: String) {
-        NSApp.activate(ignoringOtherApps: true)
+        if !quiet { NSApp.activate(ignoringOtherApps: true) }
         let a = NSAlert()
         a.messageText = "\(APP_NAME) v\(v) is ready"
         a.informativeText = "You have v\(VERSION). Do you want to update?" + (notes.isEmpty ? "" : "\n\nWhat is new: \(notes.prefix(400))")
         a.addButton(withTitle: "Update")
         a.addButton(withTitle: "Later")
         if let icon = NSImage(contentsOf: newApp.appendingPathComponent("Contents/Resources/AppIcon.icns")) { a.icon = icon }
+        if quiet {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { print("alert \(NSApp.modalWindow?.windowNumber ?? -1)"); fflush(stdout) }
+        }
         guard a.runModal() == .alertFirstButtonReturn else { log("v\(v): later"); return }
         install(newApp)
     }
@@ -83,18 +89,18 @@ enum Updater {
         let script = cache.appendingPathComponent("install.sh")
         let sh = """
         #!/bin/sh
-        T="$1"; N="$2"; P="$3"; S="$4"
+        T="$1"; N="$2"; P="$3"; S="$4"; Q="$5"
         while kill -0 "$P" 2>/dev/null; do sleep 0.2; done
         xattr -dr com.apple.quarantine "$N" 2>/dev/null
         codesign --force -s "$S" "$N" || { open "$T"; exit 1; }
         rm -rf "$T.old"; mv "$T" "$T.old" || { open "$T"; exit 1; }
         if ditto "$N" "$T"; then rm -rf "$T.old"; else rm -rf "$T"; mv "$T.old" "$T"; fi
-        open "$T"
+        [ "$Q" = "quiet" ] || open "$T"
         """
         do { try sh.write(to: script, atomically: true, encoding: .utf8) } catch { tell("Update failed: \(error)"); return }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = [script.path, target, newApp.path, String(getpid()), Config.sign]
+        p.arguments = [script.path, target, newApp.path, String(getpid()), Config.sign, quiet ? "quiet" : ""]
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { tell("Update failed: \(error)"); return }
         log("installing \(newApp.path) over \(target)")
