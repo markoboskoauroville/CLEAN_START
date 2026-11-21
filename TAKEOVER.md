@@ -1,0 +1,146 @@
+# TAKEOVER: Clean Start (Mantra)
+
+Public and unpromoted repository: no README and no description (MANTRA_MANIFEST repo-privacy.md). Everything about the
+app is in this file. Requests word for word: `momentaryupdates.md`. Mistakes and what they taught: `LESSONS.md`.
+
+## What it is
+
+A Mac app (Swift, macOS 14+, written for Marko's macOS 15 on Apple silicon) with one window:
+
+- **CLEAN START**: every non-Apple thing that starts by itself is switched off for the next login and boot.
+- **NORMAL START**: everything comes back exactly as it was before CLEAN START, except what Marko switched himself.
+- **The list** of everything that starts by itself, grouped by kind, each group a folder (name, count, one line saying
+  what is inside). Each row: a switch (or SETTINGS for what macOS lets only System Settings switch), the name, the vendor
+  or app it belongs to, the kind, when it starts, notes (also off in System Settings, running now), the plist path and the
+  command it runs.
+- His own switch in a row is remembered as **his choice** and wins in both modes: switched off stays off after NORMAL
+  START, switched on stays on after CLEAN START. The row says "your choice: on/off, kept in both modes".
+- Nothing that runs now is stopped: every change is for the next start. A row switched off while its program runs says
+  so.
+- Apple's own items are never listed as switchable and never touched; the window shows only their count
+  ("Apple system items: 835, not touched" on 21.11.2026). SIP is off on this Mac, so this rule matters more.
+- The window's X quits the app (no ON/OFF). Standard NSWindow, resizable on every edge, frame autosave, the app's own
+  title once (system title hidden in every state, guarded in CI by `tools/check_one_title.sh`). Version `vN` top right,
+  a click opens the latest release. Amber **PERMISSIONS** top right only while Automation of System Events is missing
+  and there are Open at Login apps to switch; a click asks macOS once, then opens Privacy › Automation.
+- It asks to update at start (kits/mac-updater, `Updater.checkAtStart()`), repo `markoboskoauroville/CLEAN_START`.
+- It adds no startup item of its own and leaves no helper running.
+
+## Where each source comes from, and how it is switched
+
+| Group in the window | Read from | Switched by | Password |
+|---|---|---|---|
+| OPEN AT LOGIN | BTM database: type 0x2 (app) with the enabled bit | System Events: `delete (every login item whose path is …)`; back with `make login item … {path, hidden}` | no; needs Automation of System Events |
+| LOGIN ITEMS INSIDE APPS | BTM type 0x4 (SMAppService login items; launchd shows them as "submitted by smd") | `launchctl disable/enable gui/<uid>/<bundle id>` | no |
+| YOUR LAUNCH AGENTS | `~/Library/LaunchAgents/*.plist` | `launchctl disable/enable gui/<uid>/<label>` | no |
+| LAUNCH AGENTS FOR EVERY USER | `/Library/LaunchAgents/*.plist` | same, in your gui domain (for you only) | no |
+| AGENTS INSIDE APPS | BTM type 0x8 without the legacy bit | `launchctl … gui/<uid>/<label>` | no |
+| LAUNCH DAEMONS | `/Library/LaunchDaemons/*.plist` | `launchctl disable/enable system/<label>`, all of one apply in ONE `do shell script … with administrator privileges` | once per apply |
+| DAEMONS INSIDE APPS | BTM type 0x10 without the legacy bit (root user record) | same as daemons | once per apply |
+| SYSTEM EXTENSIONS | `systemextensionsctl list` | read only, SETTINGS opens Login Items & Extensions | – |
+| OTHER STARTERS | `crontab -l` @reboot lines, LoginHook/LogoutHook in com.apple.loginwindow, /Library/StartupItems | read only, the row says how to remove it | – |
+| TEST DUMMIES | `$CLEANSTART_TEST_DIR` (test mode only) | `launchctl … gui/<uid>/<label>` | no |
+
+State of a launchd row: `launchctl print-disabled gui/<uid>` / `system` first (`disabled`/`true` = off), else the plist's
+`Disabled` key, else on. Read at launch, after every change and whenever the window becomes key. The mode shown is read
+from that real state: CLEAN when every switchable item is off except his ON choices, else NORMAL (and if a Clean is in
+force but items came back on, the line says how many).
+
+The BTM database is `/private/var/db/com.apple.backgroundtaskmanagement/BackgroundItems-v<N>.btm` (the newest N), readable
+by every user, an NSKeyedArchiver archive (classes Storage, ItemRecord, BTMUserSettings). The app decodes it with its own
+classes (`BTMStorage`, `BTMItem`, Engine.swift). Records are keyed by the user's GeneratedUID (`dscl . -read /Users/<me>
+GeneratedUID`); daemons sit under `FFFFEEEE-DDDD-CCCC-BBBB-AAAAFFFFFFFE`. Disposition bits: 1 enabled, 2 allowed (the
+switch in System Settings), 4 hidden, 8 notified. Type bits: 0x2 app, 0x4 login item, 0x8 agent, 0x10 daemon, 0x20
+developer group, 0x40 Spotlight, 0x800 Quick Look, 0x10000 legacy (a plist file). It also gives the vendor names.
+
+## What cannot be switched, and why
+
+- **The "allowed" switch of System Settings › Login Items** (BTM disposition bit 2): Apple has no API for another app's
+  item, and `sfltool` only dumps or resets. Clean Start does not need it: launchd's own off list is checked before any
+  job starts. Rows where System Settings is already off say "also off in System Settings › Login Items".
+- **System extensions** (drivers, network, camera): only System Settings may switch them. Read only, SETTINGS button.
+- **Agents limited to the LoginWindow or another non-Aqua session** (e.g. RealVNC prelogin): they run outside the user's
+  gui domain, so `gui/<uid>` does not reach them. Read only, with that reason.
+- **cron @reboot, login hooks, StartupItems**: shown read only; none exist on this Mac (21.11.2026). The root crontab
+  cannot be read without a password and is not listed.
+
+## The snapshot (format 1)
+
+`~/Library/Application Support/Clean Start (Mantra)/` (made on the first write; reading never creates it):
+
+- `snapshot.json`: `{format, app, appVersion, created, active, lastClean, lastNormal, items: {<key>: {name, mech, label,
+  path, wasOn, hidden}}}`. Keys: `gui:<label>`, `system:<label>`, `login:<app path>`. `mech` is gui · system · loginItem.
+  `hidden` only for Open at Login apps (read from System Events at Clean time).
+- `choices.json`: `{<key>: true|false}`, his own switches.
+- `backups/snapshot-YYYY-MM-DD-HHMMSS.json`: a copy at every CLEAN press.
+- `log.txt`: every command and its result.
+
+Rules: CLEAN writes the snapshot BEFORE changing anything; if the snapshot cannot be written or read, CLEAN refuses and
+changes nothing. While a Clean is in force (`active: true`) a second CLEAN never overwrites the "before" state: only items
+new since then are added. NORMAL restores every item to `choice ?? wasOn`, then sets `active: false` (the file stays).
+The next CLEAN after a NORMAL captures a fresh "before". Open at Login apps taken out by Clean stay listed from the
+snapshot (switched off) so they can be switched back one by one. All of it survives quitting, updating and restarting.
+
+## Command line and test mode
+
+Same engine as the window (`app/App.swift` header):
+
+    "/Applications/Clean Start (Mantra).app/Contents/MacOS/Clean Start (Mantra)" --status
+    … --clean | --normal | --set <key> on|off     (refused outside test mode unless --yes-real)
+    … --shot out.png --width 860                    (off-screen drawing, every group open, the whole list)
+
+Test mode (never touches a real item):
+
+    export CLEANSTART_TEST_PREFIX=com.mantra.cleanstart.testdummy.   # only labels with this prefix are switched
+    export CLEANSTART_TEST_DIR=<folder with dummy plists>            # listed as TEST DUMMIES, gui domain
+    export CLEANSTART_STATE_DIR=<folder>                             # snapshot/choices apart from the real ones
+    export CLEANSTART_TEST_FRAME=1500,420,860,800                    # window frame (MacBook screen), no autosave
+    export CLEANSTART_EXPAND=1                                       # every group open
+
+In test mode everything real is listed and locked, the updater does not run, the window is not activated, and CLEAN /
+NORMAL also write `would-run-clean.sh` / `would-run-normal.sh` into the state folder: the exact commands a real press
+would run on the real items (gui launchctl lines, the System Events scripts, the one root command), NOT run.
+
+Dummies live in a scratch folder, not in ~/Library/LaunchAgents: a new plist there makes macOS post a "Background Items
+Added" notification on Marko's screen. Each dummy: Label `com.mantra.cleanstart.testdummy.<x>`, ProgramArguments
+`/usr/bin/true`, RunAtLoad. `launchctl enable` at the end leaves "<label> => enabled" lines in launchd's override list
+(they cannot be removed without root and do nothing).
+
+## Build and install
+
+Compiled only by GitHub Actions (`.github/workflows/mac-swift.yml`, the MANTRA_MANIFEST template with APP set) on every
+push to main: `build.sh` runs the one-title guard, swiftc, draws the icon (`tools/make_icon.swift`), signs ad hoc; the
+workflow zips it and makes release vN marked Latest. NEVER build on the Mac. Install:
+
+    gh release download --repo markoboskoauroville/CLEAN_START --pattern app.zip -D <scratch> --clobber
+    ditto -x -k <scratch>/app.zip /Applications && codesign --force -s "Mantra Apps" "/Applications/Clean Start (Mantra).app"
+
+From v2 on, a running copy asks to update by itself.
+
+Icon: CLE / STA over the power symbol on the black tile (icon/README.md, icon/six_1024.png). Bundle id
+`com.mantra.cleanstart`. Version: `let VERSION = N` in app/App.swift, whole numbers.
+
+## Files
+
+- `app/App.swift`: VERSION, command line, window, one-title, off-screen shot.
+- `app/Engine.swift`: reading every source, the BTM decoder, switching, snapshot and choices.
+- `app/UI.swift`: the SwiftUI page (CAMERA language: words, colour is the state).
+- `app/Updater.swift`: kits/mac-updater, repo set.
+- `tools/check_one_title.sh`, `tools/make_icon.swift`, `build.sh`, `Info.plist`.
+
+## Found on this Mac, 21.11.2026
+
+Open at Login 8 · login items inside apps 5 · your launch agents 23 · launch agents for every user 12 · launch daemons 20 ·
+daemons inside apps 1 · system extensions 12 (read only) · other 0 · Apple items 835 (not touched). Two of
+~/Library/LaunchAgents (com.google.keystone.agent, .xpcservice) are empty plists. One daemon, `com.love.russia.plist`
+(runs /bin/bash as root at boot, no vendor), is worth a look by Marko.
+
+## Not yet proven
+
+- A real CLEAN / NORMAL on Marko's real items, and a real login after it. Only dummies were switched.
+- The administrator prompt path (`do shell script … with administrator privileges`) was built and its exact command
+  written to would-run-clean.sh, never run.
+- System Events delete/re-add of Open at Login apps: the scripts were written, never run. Reading the list through
+  System Events (paths and hidden flags) matched the BTM list exactly.
+- That `launchctl disable gui/<uid>/<id>` stops an SMAppService login item at the next login (launchd documents the off
+  list for every job it loads; not watched across a login here).
