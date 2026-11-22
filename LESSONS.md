@@ -40,3 +40,10 @@ Every mistake met on the way, and what it taught. Newest last.
 17. **21.11.2026, the master's first plan missed the order of a press.** It did not say the administrator step comes first;
     it was found only at scoring (lesson 10). A plan for anything that changes system state names what happens when the
     user cancels half way.
+18. **22.11.2026, a Clean must not kill what authorises his work.** v1-v5 switched iLok/PACE off, so audio plug-ins would stop
+    authorising after a Clean. From v6 anything matching the PACE patterns is KEPT on (never disabled, switched on if found off).
+    A "turn everything off" tool needs a protected list from the first version; ask which licence helpers his work depends on.
+19. **22.11.2026, the test lock must let a dummy carry a protected label.** To prove the keep rule without touching the real PACE
+    daemon, dummies in the test folders may have a com.paceap.* label; real items stay locked. `--version` is not a flag: it opens the
+    window (use `--status`).
+

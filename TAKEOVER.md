@@ -3,9 +3,9 @@
 Public and unpromoted repository: no README and no description (MANTRA_MANIFEST repo-privacy.md). Everything about the
 app is in this file. Requests word for word: `momentaryupdates.md`. Mistakes and what they taught: `LESSONS.md`.
 
-## Status: CLOSED 21.11.2026
+## Status: v6 installed 22.11.2026 (iLok / PACE kept on)
 
-v5 installed, release Latest, Fable score 9 of 10 (v2 scored 7; seven corrections). Waiting for Marko: (1) the real test,
+v6 (22.11.2026, Marko: "It should not kill ... iLok works. My audio plug-ins are working. Only that part you need to change."): everything of iLok / PACE Anti-Piracy is a protected KEPT group, see "iLok / PACE is KEPT" below. Before that, CLOSED 21.11.2026: v5 installed, release Latest, Fable score 9 of 10 (v2 scored 7; seven corrections). Waiting for Marko: (1) the real test,
 CLEAN START, restart, look, NORMAL START, restart; (2) the root daemon `com.love.russia.plist` points at the missing
 `/Users/markobosko/.start`; (3) whether the Path Finder and iBoysoft helpers stay on by default in a Clean (his cracked apps:
 the app does not decide for him); (4) Queen's clean-start skill is installed (queen_skills/clean-start.md) but her chat
@@ -60,6 +60,20 @@ classes (`BTMStorage`, `BTMItem`, Engine.swift). Records are keyed by the user's
 GeneratedUID`); daemons sit under `FFFFEEEE-DDDD-CCCC-BBBB-AAAAFFFFFFFE`. Disposition bits: 1 enabled, 2 allowed (the
 switch in System Settings), 4 hidden, 8 notified. Type bits: 0x2 app, 0x4 login item, 0x8 agent, 0x10 daemon, 0x20
 developer group, 0x40 Spotlight, 0x800 Quick Look, 0x10000 legacy (a plist file). It also gives the vendor names.
+
+## iLok / PACE is KEPT (v6, 22.11.2026)
+
+An item is KEPT when its label, plist path, name, vendor or command contains (case-insensitive) `paceap`, `ilok`, `pace anti-piracy`,
+`paceantipiracy` or `ldsvc` (`Engine.keepPatterns`, so future PACE versions are covered). On this Mac: the daemon
+`com.paceap.eden.licensed` (/Library/LaunchDaemons) and the agent `com.paceap.eden.licensed.agent` (/Library/LaunchAgents), both
+ON on 22.11.2026; the PACEAntiPiracy folder in /Library/Application Support; no PACE system extension or kext. A KEPT row shows the word
+KEPT (green) instead of ON, with a note; if found OFF it shows OFF (amber). CLEAN START never disables it and switches it ON if it is off;
+NORMAL START switches it ON if it is off. Rule in `Engine.target`: a KEPT item is always on in both presses (his row switch still works
+at once, but the next press puts it back on). KEPT items do not count in the CLEAN/NORMAL mode reading; the "Now" line says how many are
+kept. Test mode: a dummy with such a label in the test folders is switchable, real PACE items stay locked (shown KEPT). `would-run-*.sh`
+carry a `# KEPT ON` line for them. Not added (only listed): Waves `com.waves.wls`, `com.waves.central.InstlHelper`, Universal Audio
+`com.uaudio.uac.launch-helper`, `com.uaudio.bsd.helper` (hardware helpers, no licence daemon), Steinberg/NI/Arturia/Plugin Alliance: none found.
+Decision for Marko: whether the Waves licence agent (`com.waves.wls`) joins KEPT.
 
 ## What cannot be switched, and why
 
