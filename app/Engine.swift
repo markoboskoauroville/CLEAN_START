@@ -84,6 +84,7 @@ struct StartItem: Identifiable {
     var running: Bool = false
     var locked: Bool = false    // test mode: a real item, never touched
     var choice: Bool? = nil     // Marko's own switch, remembered
+    var keep = false            // iLok / PACE Anti-Piracy: always on, in a Clean too (KEPT)
     var switchable: Bool { mech != .readOnly }
     var changeable: Bool { switchable && !locked }
 }
@@ -96,6 +97,7 @@ struct ScanResult {
     var mode: Mode = .normal
     var snapshotActive = false
     var snapshotDate: String? = nil
+    var keptCount = 0            // iLok / PACE items, always on
     var stillOn = 0              // items that would keep starting although CLEAN is set
     var automation: OSStatus = noErr
     var problems: [String] = []
@@ -423,6 +425,20 @@ final class Engine {
 
     func isApple(_ label: String, _ path: String) -> Bool { label.hasPrefix("com.apple.") || path.hasPrefix("/System/") }
 
+    /// iLok / PACE Anti-Piracy licensing (labels com.paceap.*, iLok License Manager, PACE's LDSvc, /PACEAntiPiracy/):
+    /// his audio plug-ins stop authorising without it, so CLEAN START never switches it off. Matched by pattern so
+    /// future PACE versions are covered too.
+    static let keepPatterns = ["paceap", "ilok", "pace anti-piracy", "pace anti piracy", "paceantipiracy", "ldsvc"]
+    func isKeep(_ i: StartItem) -> Bool {
+        let hay = [i.label, i.path, i.name, i.owner, i.runs].joined(separator: "\n").lowercased()
+        return Engine.keepPatterns.contains { hay.contains($0) }
+    }
+    /// What an item should be after a press: a kept item is always on; the rest follow his choice, else off / as it was.
+    func target(_ i: StartItem, clean: Bool, was: Bool?) -> Bool {
+        if i.keep { return true }
+        return clean ? (i.choice ?? false) : (i.choice ?? was ?? i.on)
+    }
+
     func trigger(_ p: [String: Any], start: String) -> String {
         var t: [String] = []
         if (p["RunAtLoad"] as? Bool) == true { t.append(start) }
@@ -617,9 +633,11 @@ final class Engine {
         // 7. choices, test lock
         for k in items.indices {
             items[k].choice = choices[items[k].id]
+            items[k].keep = items[k].switchable && isKeep(items[k])
             if let t = testPrefix {
                 let subject = items[k].mech == .loginItem ? items[k].name : items[k].label
-                items[k].locked = !subject.hasPrefix(t)
+                // a dummy in the test folders may carry a PACE-like label, to prove the keep rule; real items stay locked
+                items[k].locked = !(subject.hasPrefix(t) || (items[k].kind == .test && items[k].keep))
             }
         }
         let order = Kind.allCases
@@ -632,7 +650,8 @@ final class Engine {
         // 8. the mode, read from the real state
         if case .ok(let s) = store.readSnapshot() { r.snapshotActive = s.active; r.snapshotDate = s.lastClean ?? s.created }
         else if case .broken(let e) = store.readSnapshot() { r.problems.append("snapshot.json cannot be read (\(e)); CLEAN START is refused until it is fixed.") }
-        let pool = items.filter { $0.changeable }
+        let pool = items.filter { $0.changeable && !$0.keep }
+        r.keptCount = items.filter { $0.keep }.count
         r.stillOn = pool.filter { $0.on && $0.choice != true }.count
         r.mode = (!pool.isEmpty && r.stillOn == 0) ? .clean : .normal
         r.automation = items.contains { $0.mech == .loginItem } ? automationStatusStartingSystemEvents() : noErr
@@ -767,7 +786,7 @@ final class Engine {
         let fresh = !snap.active     // a new "before": the state now. While active, only new items are added.
         var changes: [Change] = []
         for i in s.items where i.changeable {
-            let target = i.choice ?? false
+            let target = self.target(i, clean: true, was: nil)
             if i.on != target { changes.append(Change(item: i, to: target)) }
         }
         // permission question before anything is written or changed
@@ -808,7 +827,7 @@ final class Engine {
         var changes: [Change] = []
         for var i in s.items where i.changeable {
             if i.mech == .loginItem { i.hidden = snap.items[i.id]?.hidden ?? i.hidden }
-            let target = i.choice ?? snap.items[i.id]?.wasOn ?? i.on
+            let target = self.target(i, clean: false, was: snap.items[i.id]?.wasOn)
             if i.on != target { changes.append(Change(item: i, to: target)) }
         }
         if isTest { writeWouldRun(s, clean: false, snap: snap) }
@@ -849,7 +868,8 @@ final class Engine {
         var sys: [Change] = []
         for var i in s.items where i.switchable && i.locked {
             i.locked = false
-            let target = clean ? (i.choice ?? false) : (i.choice ?? snap?.items[i.id]?.wasOn ?? i.on)
+            let target = self.target(i, clean: clean, was: snap?.items[i.id]?.wasOn)
+            if i.keep { lines.append("# KEPT ON (iLok / PACE), never disabled: \(i.mech == .system ? "system" : "gui")/\(i.label) is \(i.on ? "on" : "OFF") now" + (i.on ? "" : "; this press switches it ON")) }
             guard i.on != target else { continue }
             switch i.mech {
             case .gui: lines.append("/bin/launchctl \(target ? "enable" : "disable") gui/\(uid)/\(shq(i.label))")

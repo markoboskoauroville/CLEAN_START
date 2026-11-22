@@ -15,7 +15,7 @@
 import AppKit
 import SwiftUI
 
-let VERSION = 5
+let VERSION = 6
 let APP_NAME = "Clean Start (Mantra)"
 let RELEASES = "https://github.com/markoboskoauroville/CLEAN_START/releases/latest"
 
@@ -71,6 +71,7 @@ func statusJSON(_ s: ScanResult, _ e: Engine) -> String {
         var d: [String: Any] = ["key": i.id, "name": i.name, "owner": i.owner, "kind": i.kind.rawValue, "mech": i.mech.rawValue,
                                 "on": i.on, "switchable": i.switchable, "locked": i.locked, "path": i.path, "trigger": i.trigger]
         if let c = i.choice { d["choice"] = c }
+        if i.keep { d["keep"] = true }
         if !i.notes.isEmpty { d["notes"] = i.notes }
         if !i.warnings.isEmpty { d["warnings"] = i.warnings }
         return d

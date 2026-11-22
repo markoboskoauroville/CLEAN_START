@@ -198,7 +198,8 @@ struct TopRow: View {
 struct ModeBlock: View {
     @ObservedObject var m: Model
     var s: ScanResult { m.scan }
-    var pool: [StartItem] { s.items.filter { $0.changeable } }
+    var pool: [StartItem] { s.items.filter { $0.changeable && !$0.keep } }
+    var keptLine: String { s.keptCount > 0 ? " \(s.keptCount) iLok / PACE item\(s.keptCount == 1 ? " is" : "s are") KEPT on, so your audio plug-ins keep authorising." : "" }
 
     var nowLine: String {
         let on = pool.filter { $0.on }.count
@@ -206,11 +207,11 @@ struct ModeBlock: View {
         switch s.mode {
         case .clean:
             let kept = pool.filter { $0.on && $0.choice == true }.count
-            return "Now: CLEAN START. \(pool.count - on) items stay off at the next start" + (kept > 0 ? "; \(kept) kept on by your choice." : ".")
+            return "Now: CLEAN START. \(pool.count - on) items stay off at the next start" + (kept > 0 ? "; \(kept) kept on by your choice." : ".") + keptLine
         case .normal:
             var t = "Now: NORMAL START. \(on) of \(pool.count) items start by themselves" + (pool.count - on > 0 ? "; \(pool.count - on) \(pool.count - on == 1 ? "is" : "are") off." : ".")
             if s.snapshotActive { t += " CLEAN START was set, but \(s.stillOn) item\(s.stillOn == 1 ? " is" : "s are") on again." }
-            return t
+            return t + keptLine
         }
     }
 
@@ -304,7 +305,8 @@ struct RowView: View {
     }
     var lines: [(String, Color)] {
         var l: [(String, Color)] = []
-        if let c = item.choice { l.append(("your choice: \(c ? "on" : "off"), kept in both modes", Palette.green)) }
+        if item.keep { l.append((item.on ? "iLok / PACE Anti-Piracy: always kept on, CLEAN START never switches it off (your audio plug-ins need it)" : "iLok / PACE Anti-Piracy: found OFF; CLEAN START and NORMAL START switch it back on", item.on ? Palette.green : Palette.amber)) }
+        if let c = item.choice, !item.keep { l.append(("your choice: \(c ? "on" : "off"), kept in both modes", Palette.green)) }
         for w in item.warnings { l.append((w, Palette.amber)) }
         for n in item.notes { l.append((n, Palette.grey)) }
         if item.running { l.append((item.on ? "running now" : "switched off; still running now, until you restart", item.on ? Palette.grey : Palette.amber)) }
@@ -323,10 +325,15 @@ struct RowView: View {
                         .disabled(m.busy)
                         .accessibilityLabel("\(item.name) starts by itself")
                         .accessibilityIdentifier("item.\(item.id)")
-                    Text(item.on ? "ON" : "OFF").font(mono(10, .bold)).foregroundColor(item.on ? Palette.green : Palette.grey)
-                        .accessibilityHidden(true)
+                    if item.keep {
+                        Text(item.on ? "KEPT" : "OFF").font(mono(10, .bold)).foregroundColor(item.on ? Palette.green : Palette.amber)
+                            .accessibilityLabel("\(item.name): kept on by CLEAN START")
+                    } else {
+                        Text(item.on ? "ON" : "OFF").font(mono(10, .bold)).foregroundColor(item.on ? Palette.green : Palette.grey)
+                            .accessibilityHidden(true)
+                    }
                 } else if item.locked && item.switchable {
-                    Text("LOCKED").font(mono(10, .bold)).foregroundColor(Palette.amber.opacity(0.75)).padding(.top, 2)
+                    Text(item.keep ? "KEPT" : "LOCKED").font(mono(10, .bold)).foregroundColor(Palette.amber.opacity(0.75)).padding(.top, 2)
                         .accessibilityLabel("\(item.name): locked in test mode, \(item.on ? "on" : "off")")
                     Text(item.on ? "on" : "off").font(mono(10)).foregroundColor(Palette.grey)
                 } else if let s = item.settingsURL {
