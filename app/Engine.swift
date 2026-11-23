@@ -998,6 +998,26 @@ final class Engine {
     }
 
     /// Test mode only: what CLEAN or FULL would run on the REAL items, written next to the test state, never run.
+    /// RESTART (v8): a normal macOS restart that lets apps save. Logged BEFORE it is asked for. Test mode never restarts:
+    /// it writes would-restart.sh and a log line instead.
+    func restart() -> [String] {
+        let cmd = "tell application \"System Events\" to restart"
+        if isTest {
+            store.log("RESTART pressed (test mode: would restart, not restarted)")
+            let body = "#!/bin/sh\n# NOT run: a real RESTART press runs this, so apps are asked to save\nosascript -e '\(cmd)'\n# if System Events is refused: /sbin/shutdown -r now, through the administrator prompt\n"
+            try? body.write(to: store.dir.appendingPathComponent("would-restart.sh"), atomically: true, encoding: .utf8)
+            return ["Test mode: RESTART would restart the Mac now (apps asked to save). Nothing was restarted; the command is in would-restart.sh."]
+        }
+        store.log("RESTART pressed: restarting the Mac through System Events (apps are asked to save)")
+        let r = appleScript(cmd)
+        if r.ok { return ["Restarting: open apps are asked to save."] }
+        store.log("RESTART: System Events refused (\(r.error ?? "?")); asking for the administrator password for shutdown -r now")
+        let a = appleScript("do shell script \"/sbin/shutdown -r now\" with administrator privileges with prompt \"\(APP_NAME) restarts the Mac.\"")
+        if a.ok { return ["Restarting through the administrator step."] }
+        store.log("RESTART: not restarted (\(a.error ?? "?"))")
+        return ["Not restarted: System Events refused and the administrator step did not go through. Nothing changed."]
+    }
+
     /// In test mode the real base is read from the REAL state folder, so would-run-full.sh shows what FULL START will do
     /// on this Mac.
     func writeWouldRun(_ s: ScanResult, clean: Bool, base: Base?) {

@@ -5,6 +5,7 @@
 //   --status                      JSON of every item and the mode, then exit
 //   --clean | --full (--normal)   press the button headless (refused outside test mode unless --yes-real)
 //   --set <key> on|off            one switch, remembered as his choice (same rule)
+//   --restart                     RESTART (test mode: only writes would-restart.sh; real needs --yes-real)
 //   --skip-login-items            with --clean/--full: switch the rest when Automation is missing (the window asks)
 //   --shot <png> [--width N]      draw the window off screen into a PNG, every group open
 // Test mode: CLEANSTART_TEST_PREFIX=<label prefix> (only labels with it are switched), CLEANSTART_TEST_DIR=<dir of dummy
@@ -15,7 +16,7 @@
 import AppKit
 import SwiftUI
 
-let VERSION = 7
+let VERSION = 8
 let APP_NAME = "Clean Start (Mantra)"
 let RELEASES = "https://github.com/markoboskoauroville/CLEAN_START/releases/latest"
 
@@ -33,7 +34,7 @@ struct Main {
             print(statusJSON(engine.scan(), engine))
             exit(0)
         }
-        if args.contains("--clean") || args.contains("--full") || args.contains("--normal") || args.contains("--set") {
+        if args.contains("--clean") || args.contains("--full") || args.contains("--normal") || args.contains("--set") || args.contains("--restart") {
             _ = NSApplication.shared
             guard allowed else {
                 print("Refused: outside test mode the command line needs --yes-real. Use the window instead.")
@@ -41,6 +42,7 @@ struct Main {
             }
             let skip = args.contains("--skip-login-items")
             var o = Engine.Outcome()
+            if args.contains("--restart") { engine.restart().forEach { print($0) }; exit(0) }
             if args.contains("--clean") { o = engine.clean(skipLogins: skip) }
             else if args.contains("--full") || args.contains("--normal") { o = engine.full(skipLogins: skip) }
             else if let i = args.firstIndex(of: "--set"), i + 2 < args.count { o = engine.set(args[i + 1], on: args[i + 2] == "on") }

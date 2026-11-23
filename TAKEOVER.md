@@ -3,7 +3,15 @@
 Public and unpromoted repository: no README and no description (MANTRA_MANIFEST repo-privacy.md). Everything about the
 app is in this file. Requests word for word: `momentaryupdates.md`. Mistakes and what they taught: `LESSONS.md`.
 
-## Status: v7 installed 23.11.2026 (FULL START that really brings everything back)
+## Status: v8 (23.11.2026, RESTART button); v7 installed 23.11.2026 (FULL START that really brings everything back)
+
+v8 (23.11.2026, Marko: "next to clean start, full start, add another pipe, and give action button restart to restart the whole computer."):
+third button RESTART (AX id `restart`) after CLEAN START | FULL START | . It asks inline in the window (`restart.question`
+"Restart the Mac now? Open apps will be asked to save.", `restart.yes` RESTART, `restart.no` CANCEL), logs "RESTART pressed" to log.txt,
+then `tell application "System Events" to restart` (apps asked to save); if System Events refuses, `/sbin/shutdown -r now` through the
+administrator prompt. Command line `--restart` (test mode only unless --yes-real). Test mode never restarts: it writes
+`would-restart.sh` into the state folder and a log line. Engine.restart(), Model.restartPressed/restartAnswer.
+
 
 v7 (23.11.2026, Marko: "I put it on full start, and it's again a clean start. I cannot go back to the full start. Please
 give two options, clean start, full start, and they actually work."). Found: the CLEAN of 22.11.2026 14:47 was still in
@@ -161,7 +169,7 @@ snapshot (switched off) so they can be switched back one by one. All of it survi
 Same engine as the window (`app/App.swift` header):
 
     "/Applications/Clean Start (Mantra).app/Contents/MacOS/Clean Start (Mantra)" --status
-    … --clean | --full | --set <key> on|off     (refused outside test mode unless --yes-real)
+    … --clean | --full | --restart | --set <key> on|off     (refused outside test mode unless --yes-real)
     … --shot out.png --width 860                    (off-screen drawing, every group open, the whole list)
 
 Test mode (never touches a real item):

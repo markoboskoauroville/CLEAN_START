@@ -21,6 +21,7 @@ final class Model: ObservableObject {
     @Published var scan = ScanResult()
     @Published var busy = false
     @Published var status: [String] = []
+    @Published var askRestart = false
     @Published var confirm: String? = nil      // a question before anything changes (missing permission)
     private var pending: ((Bool) -> Engine.Outcome)? = nil
     @Published var open: Set<Kind> = []
@@ -60,6 +61,11 @@ final class Model: ObservableObject {
     }
     func clean() { run { self.engine.clean(skipLogins: $0) } }
     func full() { run { self.engine.full(skipLogins: $0) } }
+    func restartPressed() { askRestart = true }
+    func restartAnswer(_ yes: Bool) {
+        askRestart = false
+        if yes { status = engine.restart() } else { status = ["Cancelled: the Mac was not restarted."] }
+    }
     func set(_ i: StartItem, _ on: Bool) { run { _ in self.engine.set(i.id, on: on) } }
     func answer(_ yes: Bool) {
         guard let job = pending else { return }
@@ -228,6 +234,9 @@ struct ModeBlock: View {
                 Text("|").font(mono(20)).foregroundColor(Palette.dark)
                 WordButton(word: "FULL START", color: s.mode == .full ? Palette.green : Palette.grey, size: 20, id: "full",
                            label: "Full start: bring back everything that was on before the first clean start") { m.full() }
+                Text("|").font(mono(20)).foregroundColor(Palette.dark)
+                WordButton(word: "RESTART", color: Palette.grey, size: 20, id: "restart",
+                           label: "Restart: restart the whole Mac now, apps are asked to save") { m.restartPressed() }
                 Spacer(minLength: 0)
                 if m.busy { Text("WORKING").font(mono(12, .bold)).foregroundColor(Palette.amber) }
             }
@@ -245,6 +254,15 @@ struct ModeBlock: View {
                 Text(line).font(.system(size: 11)).foregroundColor(bad ? Palette.amber : Palette.green).fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("status")
+            }
+            if m.askRestart {
+                Text("Restart the Mac now? Open apps will be asked to save.").font(.system(size: 11, weight: .semibold)).foregroundColor(Palette.amber)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("restart.question")
+                HStack(spacing: 10) {
+                    WordButton(word: "RESTART", color: Palette.amber, id: "restart.yes", label: "Restart the Mac now") { m.restartAnswer(true) }
+                    Text("|").font(mono(12)).foregroundColor(Palette.dark)
+                    WordButton(word: "CANCEL", color: Palette.grey, id: "restart.no", label: "Cancel, do not restart") { m.restartAnswer(false) }
+                }
             }
             if let q = m.confirm {
                 Text(q).font(.system(size: 11, weight: .semibold)).foregroundColor(Palette.amber)
