@@ -46,4 +46,14 @@ Every mistake met on the way, and what it taught. Newest last.
 19. **22.11.2026, the test lock must let a dummy carry a protected label.** To prove the keep rule without touching the real PACE
     daemon, dummies in the test folders may have a com.paceap.* label; real items stay locked. `--version` is not a flag: it opens the
     window (use `--status`).
-
+20. **23.11.2026, the mode shown must be read item by item, and a press must leave a trace before it can hang.** Marko: "I put it
+    on full start, and it's again a clean start." The CLEAN of 22.11.2026 14:47 was still in force (57 items off), log.txt had no
+    NORMAL press after it, and v6's window said "Now: NORMAL START" in green because 6 items had come back on by themselves: the
+    mode was "NORMAL unless every item is off". A press that waits for the administrator password wrote nothing before the
+    prompt, so a press stuck behind a hidden prompt (or quit) leaves no trace. From v7: CLEAN while anything FULL START would
+    bring back is still off; the press and the system labels are logged before the prompt; the window comes to the front first.
+21. **23.11.2026, one snapshot is one point of failure.** The "before Clean" state lived only in snapshot.json; once a Clean was
+    marked finished (or the file was lost or broken), a second CLEAN would have recorded "off" as the before. From v7 log.txt is a
+    ledger: whatever this app switched off last and never back comes back with FULL START, and the newest backup stands in for
+    a missing or broken snapshot. Tested with dummies: clean, clean again, full; snapshot forced inactive then CLEAN again;
+    snapshot and backups deleted; snapshot made garbage: every dummy came back each time.
