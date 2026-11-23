@@ -1,5 +1,5 @@
 // UI.swift: the window. CAMERA language (MANTRA_MANIFEST language-camera.md): words, no boxes, colour is the state
-// (green on, grey off, amber warning or needs you). Two choices on the first screen: CLEAN START | NORMAL START.
+// (green on, grey off, amber warning or needs you). Two choices on the first screen: CLEAN START | FULL START.
 // The list sits behind its groups, each a folder with a one-line "what is inside" (simple-first.md).
 import AppKit
 import SwiftUI
@@ -59,7 +59,7 @@ final class Model: ObservableObject {
         }
     }
     func clean() { run { self.engine.clean(skipLogins: $0) } }
-    func normal() { run { self.engine.normal(skipLogins: $0) } }
+    func full() { run { self.engine.full(skipLogins: $0) } }
     func set(_ i: StartItem, _ on: Bool) { run { _ in self.engine.set(i.id, on: on) } }
     func answer(_ yes: Bool) {
         guard let job = pending else { return }
@@ -204,14 +204,19 @@ struct ModeBlock: View {
     var nowLine: String {
         let on = pool.filter { $0.on }.count
         if s.items.isEmpty { return "Reading what starts by itself…" }
+        // The mode is read from launchd and the login items, item by item: CLEAN while anything that CLEAN START
+        // switched off is still off; FULL when FULL START would change nothing.
         switch s.mode {
         case .clean:
             let kept = pool.filter { $0.on && $0.choice == true }.count
-            return "Now: CLEAN START. \(pool.count - on) items stay off at the next start" + (kept > 0 ? "; \(kept) kept on by your choice." : ".") + keptLine
-        case .normal:
-            var t = "Now: NORMAL START. \(on) of \(pool.count) items start by themselves" + (pool.count - on > 0 ? "; \(pool.count - on) \(pool.count - on == 1 ? "is" : "are") off." : ".")
-            if s.snapshotActive { t += " CLEAN START was set, but \(s.stillOn) item\(s.stillOn == 1 ? " is" : "s are") on again." }
+            var t = "Now: CLEAN START. \(s.heldOff) item\(s.heldOff == 1 ? " is" : "s are") off for the next start; FULL START brings \(s.heldOff == 1 ? "it" : "them") back."
+            let back = pool.filter { $0.on && $0.choice != true }.count
+            if back > 0 { t += " \(back) came back on by \(back == 1 ? "itself" : "themselves")." }
+            if kept > 0 { t += " \(kept) kept on by your choice." }
             return t + keptLine
+        case .full:
+            let off = pool.filter { !$0.on }.count
+            return "Now: FULL START. \(on) of \(pool.count) items start by themselves" + (off > 0 ? "; \(off) \(off == 1 ? "was" : "were") already off before any CLEAN START, or by your choice." : ".") + keptLine
         }
     }
 
@@ -221,14 +226,14 @@ struct ModeBlock: View {
                 WordButton(word: "CLEAN START", color: s.mode == .clean ? Palette.green : Palette.grey, size: 20, id: "clean",
                            label: "Clean start: switch every item off for the next start") { m.clean() }
                 Text("|").font(mono(20)).foregroundColor(Palette.dark)
-                WordButton(word: "NORMAL START", color: s.mode == .normal ? Palette.green : Palette.grey, size: 20, id: "normal",
-                           label: "Normal start: bring back what was on before") { m.normal() }
+                WordButton(word: "FULL START", color: s.mode == .full ? Palette.green : Palette.grey, size: 20, id: "full",
+                           label: "Full start: bring back everything that was on before the first clean start") { m.full() }
                 Spacer(minLength: 0)
                 if m.busy { Text("WORKING").font(mono(12, .bold)).foregroundColor(Palette.amber) }
             }
             .disabled(m.busy || s.items.isEmpty)
             Text(nowLine).font(mono(12)).foregroundColor(Palette.white).fixedSize(horizontal: false, vertical: true)
-            Text("CLEAN START switches every item below off for the next login and boot; what runs now keeps running until you restart. NORMAL START brings back what was on before, except what you switched yourself. Apple's own items are never touched.")
+            Text("CLEAN START switches every item below off for the next login and boot; what runs now keeps running until you restart. FULL START brings back everything that was on before the first CLEAN START (it asks for your administrator password once), except what you switched yourself; restart the Mac after either. Apple's own items are never touched.")
                 .font(.system(size: 11)).foregroundColor(Palette.grey).fixedSize(horizontal: false, vertical: true)
             if let p = m.engine.testPrefix {
                 Text("TEST MODE: only labels starting with \(p) are switched; everything else is shown and locked.")
@@ -305,7 +310,7 @@ struct RowView: View {
     }
     var lines: [(String, Color)] {
         var l: [(String, Color)] = []
-        if item.keep { l.append((item.on ? "iLok / PACE Anti-Piracy: always kept on, CLEAN START never switches it off (your audio plug-ins need it)" : "iLok / PACE Anti-Piracy: found OFF; CLEAN START and NORMAL START switch it back on", item.on ? Palette.green : Palette.amber)) }
+        if item.keep { l.append((item.on ? "iLok / PACE Anti-Piracy: always kept on, CLEAN START never switches it off (your audio plug-ins need it)" : "iLok / PACE Anti-Piracy: found OFF; CLEAN START and FULL START switch it back on", item.on ? Palette.green : Palette.amber)) }
         if let c = item.choice, !item.keep { l.append(("your choice: \(c ? "on" : "off"), kept in both modes", Palette.green)) }
         for w in item.warnings { l.append((w, Palette.amber)) }
         for n in item.notes { l.append((n, Palette.grey)) }

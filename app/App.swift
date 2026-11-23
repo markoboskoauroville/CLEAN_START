@@ -1,11 +1,11 @@
-// Clean Start (Mantra): one window, CLEAN START or NORMAL START, and the list of everything that starts by itself.
+// Clean Start (Mantra): one window, CLEAN START or FULL START (NORMAL START until v6), and the list of everything that starts by itself.
 // Marko, 21.11.2026 (momentaryupdates.md). What it is, how each source is switched, the snapshot: TAKEOVER.md.
 //
 // Command line (the same engine as the window):
 //   --status                      JSON of every item and the mode, then exit
-//   --clean | --normal            press the button headless (refused outside test mode unless --yes-real)
+//   --clean | --full (--normal)   press the button headless (refused outside test mode unless --yes-real)
 //   --set <key> on|off            one switch, remembered as his choice (same rule)
-//   --skip-login-items            with --clean/--normal: switch the rest when Automation is missing (the window asks)
+//   --skip-login-items            with --clean/--full: switch the rest when Automation is missing (the window asks)
 //   --shot <png> [--width N]      draw the window off screen into a PNG, every group open
 // Test mode: CLEANSTART_TEST_PREFIX=<label prefix> (only labels with it are switched), CLEANSTART_TEST_DIR=<dir of dummy
 // plists>, CLEANSTART_STATE_DIR=<dir> (snapshot and choices kept apart from the real ones), CLEANSTART_TEST_FRAME=x,y,w,h,
@@ -15,7 +15,7 @@
 import AppKit
 import SwiftUI
 
-let VERSION = 6
+let VERSION = 7
 let APP_NAME = "Clean Start (Mantra)"
 let RELEASES = "https://github.com/markoboskoauroville/CLEAN_START/releases/latest"
 
@@ -33,7 +33,7 @@ struct Main {
             print(statusJSON(engine.scan(), engine))
             exit(0)
         }
-        if args.contains("--clean") || args.contains("--normal") || args.contains("--set") {
+        if args.contains("--clean") || args.contains("--full") || args.contains("--normal") || args.contains("--set") {
             _ = NSApplication.shared
             guard allowed else {
                 print("Refused: outside test mode the command line needs --yes-real. Use the window instead.")
@@ -42,7 +42,7 @@ struct Main {
             let skip = args.contains("--skip-login-items")
             var o = Engine.Outcome()
             if args.contains("--clean") { o = engine.clean(skipLogins: skip) }
-            else if args.contains("--normal") { o = engine.normal(skipLogins: skip) }
+            else if args.contains("--full") || args.contains("--normal") { o = engine.full(skipLogins: skip) }
             else if let i = args.firstIndex(of: "--set"), i + 2 < args.count { o = engine.set(args[i + 1], on: args[i + 2] == "on") }
             o.lines.forEach { print($0) }
             if let q = o.confirm { print(q); print("(again with --skip-login-items to switch the rest)") }
@@ -79,7 +79,7 @@ func statusJSON(_ s: ScanResult, _ e: Engine) -> String {
     var counts: [String: Int] = [:]
     for i in s.items { counts[i.kind.rawValue, default: 0] += 1 }
     let d: [String: Any] = ["app": APP_NAME, "version": VERSION, "mode": s.mode.rawValue, "test": e.isTest,
-                            "snapshotActive": s.snapshotActive, "stillOn": s.stillOn, "appleNotTouched": s.appleCount,
+                            "snapshotActive": s.snapshotActive, "stillOn": s.stillOn, "heldOff": s.heldOff, "restoreFrom": s.restoreFrom, "appleNotTouched": s.appleCount,
                             "automation": Int(s.automation), "counts": counts, "problems": s.problems,
                             "stateDir": e.store.dir.path, "items": items]
     let data = (try? JSONSerialization.data(withJSONObject: d, options: [.prettyPrinted, .sortedKeys])) ?? Data()

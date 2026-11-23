@@ -89,12 +89,14 @@ struct StartItem: Identifiable {
     var changeable: Bool { switchable && !locked }
 }
 
-enum Mode: String { case clean = "CLEAN START", normal = "NORMAL START" }
+enum Mode: String { case clean = "CLEAN START", full = "FULL START" }
 
 struct ScanResult {
     var items: [StartItem] = []
     var appleCount = 0
-    var mode: Mode = .normal
+    var mode: Mode = .full
+    var heldOff = 0              // items CLEAN START holds off that FULL START brings back (the real mode: >0 = CLEAN)
+    var restoreFrom = ""         // where FULL START takes "as it was" from: snapshot.json, a backup, or the log
     var snapshotActive = false
     var snapshotDate: String? = nil
     var keptCount = 0            // iLok / PACE items, always on
@@ -164,6 +166,51 @@ final class Store {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]
         try? e.encode(c).write(to: choicesURL, options: .atomic)
     }
+    /// The newest readable copy in backups/ (used when snapshot.json is missing or broken).
+    func newestBackup() -> (Snapshot, String)? {
+        let b = dir.appendingPathComponent("backups")
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: b.path)) ?? []).filter { $0.hasSuffix(".json") }.sorted().reversed()
+        for n in names {
+            if let s = try? JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: b.appendingPathComponent(n))) { return (s, "backups/\(n)") }
+        }
+        return nil
+    }
+    /// What the app itself last did to each item, read from log.txt (v7, 23.11.2026): key -> on (true) / off (false).
+    /// An item whose last action by this app was "disable" or "remove" is held off by the app, and FULL START brings it
+    /// back whatever a later snapshot says. Lines: "gui enable|disable <label> -> 0", "system enable|disable <label> -> ok"
+    /// (from v7), "login add|remove <path> -> ok". Before v7 system lines named no labels ("system N items -> ok").
+    func ledger() -> [String: Bool] {
+        guard let text = try? String(contentsOf: dir.appendingPathComponent("log.txt"), encoding: .utf8) else { return [:] }
+        var last: [String: Bool] = [:]
+        for raw in text.split(separator: "\n") {
+            let line = String(raw)
+            guard let sp = line.firstIndex(of: " "), let arrow = line.range(of: " -> ", options: .backwards) else { continue }
+            let body = String(line[line.index(after: sp)..<arrow.lowerBound])
+            let result = line[arrow.upperBound...].trimmingCharacters(in: .whitespaces)
+            for (prefix, mech, on) in [("gui enable ", "gui", true), ("gui disable ", "gui", false),
+                                       ("system enable ", "system", true), ("system disable ", "system", false),
+                                       ("login add ", "login", true), ("login remove ", "login", false)] {
+                guard body.hasPrefix(prefix) else { continue }
+                let subject = String(body.dropFirst(prefix.count))
+                guard !subject.isEmpty else { break }
+                let ok = mech == "gui" ? result == "0" : result == "ok"
+                if ok { last[mech + ":" + subject] = on }
+                break
+            }
+        }
+        return last
+    }
+
+    /// True when the last press written in log.txt was a CLEAN START that changed something (a Clean is in force).
+    func lastPressWasClean() -> Bool {
+        guard let text = try? String(contentsOf: dir.appendingPathComponent("log.txt"), encoding: .utf8) else { return false }
+        for raw in text.split(separator: "\n").reversed() {
+            if raw.contains(" CLEAN START ") && !raw.contains("aborted") { return true }
+            if raw.contains(" NORMAL START ") || raw.contains(" FULL START ") { if !raw.contains("aborted") && raw.contains(" 0 failed") { return false } }
+        }
+        return false
+    }
+
     func log(_ s: String) {
         ensureDir()
         let line = "\(stamp()) \(s)\n"
@@ -433,10 +480,33 @@ final class Engine {
         let hay = [i.label, i.path, i.name, i.owner, i.runs].joined(separator: "\n").lowercased()
         return Engine.keepPatterns.contains { hay.contains($0) }
     }
-    /// What an item should be after a press: a kept item is always on; the rest follow his choice, else off / as it was.
-    func target(_ i: StartItem, clean: Bool, was: Bool?) -> Bool {
+    /// What FULL START restores, and from where: snapshot.json; if it is missing or broken, the newest backup; plus the
+    /// log's ledger of what this app itself switched off and never switched back (v7, 23.11.2026).
+    struct Base {
+        var snap: Snapshot?
+        var from: String
+        var leftOff: Set<String>      // keys this app switched off last (log.txt), brought back by FULL START
+        var isEmpty: Bool { snap == nil && leftOff.isEmpty }
+        /// The "before" of a snapshot counts only while its Clean is in force; after a complete FULL START only the log does.
+        func wasOn(_ key: String) -> Bool? { leftOff.contains(key) ? true : (snap?.active == true ? snap?.items[key]?.wasOn : nil) }
+    }
+    func restoreBase() -> Base {
+        let led = store.ledger()
+        let off = Set(led.filter { !$0.value }.keys)
+        switch store.readSnapshot() {
+        case .ok(let s): return Base(snap: s, from: "snapshot.json", leftOff: off)
+        default:
+            if let found = store.newestBackup() { var b = found.0; b.active = store.lastPressWasClean(); return Base(snap: b, from: found.1, leftOff: off) }
+            return Base(snap: nil, from: off.isEmpty ? "" : "log.txt", leftOff: off)
+        }
+    }
+
+    /// What an item should be after a press: a kept item is always on; the rest follow his choice, else off (CLEAN) or
+    /// as it was before the first CLEAN (FULL: anything this app switched off comes back on).
+    func target(_ i: StartItem, clean: Bool, base: Base?) -> Bool {
         if i.keep { return true }
-        return clean ? (i.choice ?? false) : (i.choice ?? was ?? i.on)
+        if let c = i.choice { return c }
+        return clean ? false : (base?.wasOn(i.id) ?? i.on)
     }
 
     func trigger(_ p: [String: Any], start: String) -> String {
@@ -569,13 +639,21 @@ final class Engine {
             add(i)
         }
 
-        // 3. Open at Login apps that Clean took out: still listed, switched off
-        if case .ok(let s) = store.readSnapshot() {
+        // 3. Open at Login apps that Clean took out: still listed, switched off (from the snapshot, a backup, or the log)
+        let base = restoreBase()
+        if let s = base.snap {
             for (key, e) in s.items where e.mech == .loginItem && !seen.contains(key) {
                 var i = StartItem(id: key, name: e.name, owner: e.name, kind: .openAtLogin, mech: .loginItem, label: e.label, path: e.path)
                 i.trigger = "at login"; i.on = false; i.hidden = e.hidden ?? false
                 add(i)
             }
+        }
+        for key in base.leftOff.sorted() where key.hasPrefix("login:") && !seen.contains(key) && !(testPrefix != nil && !key.contains(testPrefix!)) {
+            let path = String(key.dropFirst(6))
+            var i = StartItem(id: key, name: noApp((path as NSString).lastPathComponent), owner: noApp((path as NSString).lastPathComponent),
+                              kind: testPrefix != nil ? .test : .openAtLogin, mech: .loginItem, label: "", path: path)
+            i.trigger = "at login"; i.on = false
+            add(i)
         }
 
         // 4. System extensions (read only)
@@ -650,10 +728,18 @@ final class Engine {
         // 8. the mode, read from the real state
         if case .ok(let s) = store.readSnapshot() { r.snapshotActive = s.active; r.snapshotDate = s.lastClean ?? s.created }
         else if case .broken(let e) = store.readSnapshot() { r.problems.append("snapshot.json cannot be read (\(e)); CLEAN START is refused until it is fixed.") }
+        // The mode is what FULL START would still change: anything it would switch back on means a Clean is in force.
+        // (v6 said NORMAL as soon as one item came back on by itself, while 61 were still off: 23.11.2026.)
         let pool = items.filter { $0.changeable && !$0.keep }
         r.keptCount = items.filter { $0.keep }.count
         r.stillOn = pool.filter { $0.on && $0.choice != true }.count
-        r.mode = (!pool.isEmpty && r.stillOn == 0) ? .clean : .normal
+        r.restoreFrom = base.from
+        for k in items.indices where items[k].changeable && !items[k].keep && !items[k].on && target(items[k], clean: false, base: base) {
+            r.heldOff += 1
+            items[k].notes.append("off by CLEAN START; FULL START switches it back on")
+        }
+        r.items = items
+        r.mode = r.heldOff > 0 ? .clean : .full
         r.automation = items.contains { $0.mech == .loginItem } ? automationStatusStartingSystemEvents() : noErr
         if testPermissionMissing { r.automation = -1744; r.forcePermission = true }
         return r
@@ -669,14 +755,23 @@ final class Engine {
         var lines: [String] = []
         var confirm: String? = nil      // asked in the window before anything changes ("switch the rest?")
         var changed = 0
+        var done: [String] = []         // names really switched (read back)
         var failed: [String] = []
         var aborted = false
     }
 
     func automationMissing() -> Bool { testPermissionMissing || automationStatusStartingSystemEvents() != noErr }
 
+    /// The window comes to the front before the administrator prompt, so the prompt is not hidden behind other windows
+    /// (v7: a NORMAL press of 23.11.2026 never got past this step; nothing of it is in the log).
+    func bringToFront() {
+        let work = { if NSApp != nil, NSApp.activationPolicy() == .regular { NSApp.activate(ignoringOtherApps: true) } }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.sync(execute: work) }
+    }
+
     /// Applies the changes in a safe order: the administrator step FIRST (refused = nothing at all is changed), then your
-    /// launchd domain, then the Open at Login apps. Every launchd change is read back from launchd before it is counted.
+    /// launchd domain, then the Open at Login apps. Every change is read back (launchd, System Events) before it is counted,
+    /// and every item is written to log.txt by name, so FULL START can always find what this app switched off.
     func apply(_ changes: [Change], skipLogins: Bool) -> Outcome {
         var o = Outcome()
         let real = changes.filter { $0.item.changeable && $0.item.on != $0.to }
@@ -696,12 +791,15 @@ final class Engine {
         if !sys.isEmpty {
             let cmd = rootCommand(sys)
             var ok = false, why = ""
+            let asked: [String] = sys.map { c in (c.to ? "enable " : "disable ") + c.item.label }
+            store.log("system: asking for the administrator password, \(sys.count) items: " + asked.joined(separator: ", "))
             if isTest {
                 try? FileManager.default.createDirectory(at: store.dir, withIntermediateDirectories: true)
                 try? cmd.write(to: store.dir.appendingPathComponent("would-run-root.sh"), atomically: true, encoding: .utf8)
                 if testRoot == "cancel" { why = "the administrator password was not given (test: simulated cancel; the command was written, not run)" }
                 else { ok = true }
             } else {
+                bringToFront()
                 let src = "do shell script \"\(asq(cmd))\" with administrator privileges with prompt \"\(APP_NAME) switches \(sys.count) system item\(sys.count == 1 ? "" : "s") for the next start.\""
                 let r = appleScript(src)
                 ok = r.ok
@@ -728,17 +826,28 @@ final class Engine {
         let ovG = overrides("gui/\(uid)"), ovS = overrides("system")
         for c in real where c.item.mech == .gui || c.item.mech == .system {
             let ov = c.item.mech == .gui ? ovG : ovS
-            if let disabled = ov[c.item.label], disabled == !c.to { o.changed += 1 }
+            let good = ov[c.item.label].map { $0 == !c.to } ?? false
+            if c.item.mech == .system && !(isTest) { store.log("system \(c.to ? "enable" : "disable") \(c.item.label) -> \(good ? "ok" : "still \(c.to ? "off" : "on")")") }
+            if good { o.changed += 1; o.done.append(c.item.name) }
             else if isTest && c.item.mech == .system { o.failed.append("\(c.item.name) (test mode: root command written, not run)") }
             else if testFail.contains(c.item.label) { o.failed.append("\(c.item.name) (launchctl failed: simulated by the test)") }
             else { o.failed.append("\(c.item.name) (launchd still has it \(c.to ? "off" : "on"))") }
         }
-        // 3. Open at Login apps
+        // 3. Open at Login apps, read back from System Events
+        var done: [Change] = []
         for c in logins {
             if isTest { o.failed.append("\(c.item.name) (test mode: System Events script written, not run)"); continue }
             let r = appleScript(loginScript(c))
-            store.log("login \(c.to ? "add" : "remove") \(c.item.path) -> \(r.ok ? "ok" : (r.error ?? "?"))")
-            if r.ok { o.changed += 1 } else { o.failed.append("\(c.item.name) (\(r.error ?? "System Events refused"))") }
+            if r.ok { done.append(c) } else { store.log("login \(c.to ? "add" : "remove") \(c.item.path) -> \(r.error ?? "?")"); o.failed.append("\(c.item.name) (\(r.error ?? "System Events refused"))") }
+        }
+        if !done.isEmpty {
+            let now = loginHidden()
+            for c in done {
+                let present = now[c.item.path] != nil
+                let good = now.isEmpty && c.to ? false : present == c.to
+                store.log("login \(c.to ? "add" : "remove") \(c.item.path) -> \(good ? "ok" : "not read back")")
+                if good { o.changed += 1; o.done.append(c.item.name) } else { o.failed.append("\(c.item.name) (System Events does not show it \(c.to ? "in" : "out of") the login items)") }
+            }
         }
         return o
     }
@@ -746,6 +855,8 @@ final class Engine {
     func summary(_ what: String, _ o: Outcome, total: Int, verb: String) -> [String] {
         var l = ["\(what): \(o.changed) of \(total) \(verb) for the next start" + (o.failed.isEmpty ? "." : "; \(o.failed.count) did not: \(o.failed.joined(separator: ", ")).")]
         if what == "CLEAN START", o.changed > 0 { l[0] += " What runs now keeps running until you restart." }
+        if what == "FULL START", o.changed > 0 { l[0] += " Restart the Mac and they start by themselves again." }
+        if !o.done.isEmpty { l.append("\(what == "FULL START" ? "Back on" : "Off") (\(o.done.count)): \(o.done.joined(separator: ", ")).") }
         return l + o.lines
     }
 
@@ -773,20 +884,23 @@ final class Engine {
         return m
     }
 
-    /// CLEAN START. The snapshot is written first (a Clean in force never overwrites the "before"), the press is all or
-    /// nothing up to the first change, and the snapshot is marked active only once something really changed.
+    /// CLEAN START. The snapshot is written first, the press is all or nothing up to the first change, and the snapshot is
+    /// marked active only once something really changed. The "before" is never lost (v7, 23.11.2026): while a Clean is in
+    /// force a second CLEAN only adds new items; and a fresh "before" counts as ON every item this app itself switched off
+    /// and never switched back (log.txt), so a CLEAN pressed on top of an unfinished Clean cannot turn "on" into "off".
     func clean(skipLogins: Bool = false) -> Outcome {
         var snap: Snapshot
         switch store.readSnapshot() {
-        case .broken(let e): return Outcome(lines: ["CLEAN START refused: snapshot.json cannot be read (\(e)). Nothing was changed."], aborted: true)
+        case .broken(let e): return Outcome(lines: ["CLEAN START refused: snapshot.json cannot be read (\(e)). Nothing was changed. FULL START still works from the backups and the log."], aborted: true)
         case .ok(let s): snap = s
         case .none: snap = Snapshot(created: stamp(), active: false, items: [:])
         }
         let s = scan()
+        let leftOff = restoreBase().leftOff
         let fresh = !snap.active     // a new "before": the state now. While active, only new items are added.
         var changes: [Change] = []
         for i in s.items where i.changeable {
-            let target = self.target(i, clean: true, was: nil)
+            let target = self.target(i, clean: true, base: nil)
             if i.on != target { changes.append(Change(item: i, to: target)) }
         }
         // permission question before anything is written or changed
@@ -796,15 +910,19 @@ final class Engine {
         let hidden = loginHidden()
         if fresh { snap.created = stamp(); snap.appVersion = VERSION }
         for i in s.items where i.changeable {
-            if snap.items[i.id] == nil || (fresh && i.mech != .loginItem) || (fresh && i.mech == .loginItem && i.on) {
-                snap.items[i.id] = SnapEntry(name: i.name, mech: i.mech, label: i.label, path: i.path, wasOn: i.on,
-                                             hidden: i.mech == .loginItem ? (hidden[i.path] ?? i.hidden) : nil)
+            let wasOn = i.on || leftOff.contains(i.id)
+            if snap.items[i.id] == nil || (fresh && i.mech != .loginItem) || (fresh && i.mech == .loginItem && wasOn) {
+                snap.items[i.id] = SnapEntry(name: i.name, mech: i.mech, label: i.label, path: i.path, wasOn: wasOn,
+                                             hidden: i.mech == .loginItem ? (hidden[i.path] ?? snap.items[i.id]?.hidden ?? i.hidden) : nil)
+            } else if !fresh, leftOff.contains(i.id), snap.items[i.id]?.wasOn == false {
+                snap.items[i.id]?.wasOn = true
             }
         }
         do { try store.write(snap) } catch { return Outcome(lines: ["CLEAN START refused: the snapshot could not be written (\(error)). Nothing was changed."], aborted: true) }
         store.backup()
         for k in changes.indices where changes[k].item.mech == .loginItem { changes[k].item.hidden = snap.items[changes[k].item.id]?.hidden ?? false }
-        if isTest { writeWouldRun(s, clean: true) }
+        if isTest { writeWouldRun(s, clean: true, base: nil) }
+        store.log("press CLEAN: \(changes.count) to switch")
         var o = apply(changes, skipLogins: skipLogins)
         if !o.aborted && (o.changed > 0 || changes.isEmpty) {
             snap.active = true
@@ -812,33 +930,50 @@ final class Engine {
             try? store.write(snap)
         }
         store.log("CLEAN START \(o.aborted ? "aborted, nothing changed" : "\(o.changed) changed, \(o.failed.count) failed"), snapshot \(fresh ? "new" : "kept"), active \(snap.active)")
-        if !o.aborted { o.lines = summary("CLEAN START", o, total: changes.count, verb: "switched") + (fresh ? [] : ["The first snapshot was kept."]) }
+        if !o.aborted { o.lines = summary("CLEAN START", o, total: changes.count, verb: "switched off") + (fresh ? [] : ["The first snapshot was kept: FULL START still brings back everything that was on before the first CLEAN START."]) }
         return o
     }
 
-    /// NORMAL START: everything back as the snapshot had it, except what he switched himself. All or nothing up to the
-    /// first change; the snapshot stays active until every item is back.
-    func normal(skipLogins: Bool = false) -> Outcome {
-        guard case .ok(var snap) = store.readSnapshot() else {
-            if case .broken(let e) = store.readSnapshot() { return Outcome(lines: ["NORMAL START refused: snapshot.json cannot be read (\(e))."], aborted: true) }
+    /// FULL START (NORMAL START until v6): everything back as it was before the first CLEAN START, except what he switched
+    /// himself; iLok / PACE always on. "As it was" comes from snapshot.json while its Clean is in force, else from the
+    /// newest backup, and in every case anything this app itself switched off and never back (log.txt) comes back on.
+    /// All or nothing up to the first change; the snapshot stays active until every item is back.
+    func full(skipLogins: Bool = false) -> Outcome {
+        let base = restoreBase()
+        if base.isEmpty {
+            if case .broken(let e) = store.readSnapshot() { return Outcome(lines: ["FULL START refused: snapshot.json cannot be read (\(e)) and there is no backup or log to restore from."], aborted: true) }
             return Outcome(lines: ["Nothing to restore: CLEAN START was never pressed. Everything is as it was."])
         }
         let s = scan()
         var changes: [Change] = []
         for var i in s.items where i.changeable {
-            if i.mech == .loginItem { i.hidden = snap.items[i.id]?.hidden ?? i.hidden }
-            let target = self.target(i, clean: false, was: snap.items[i.id]?.wasOn)
+            if i.mech == .loginItem { i.hidden = base.snap?.items[i.id]?.hidden ?? i.hidden }
+            let target = self.target(i, clean: false, base: base)
             if i.on != target { changes.append(Change(item: i, to: target)) }
         }
-        if isTest { writeWouldRun(s, clean: false, snap: snap) }
+        if isTest { writeWouldRun(s, clean: false, base: base) }
+        store.log("press FULL: \(changes.count) to switch, restoring from \(base.from)")
         var o = apply(changes, skipLogins: skipLogins)
         if !o.aborted && o.failed.isEmpty {
+            var snap: Snapshot
+            switch store.readSnapshot() {
+            case .ok(let x): snap = x
+            case .broken:
+                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd-HHmmss"
+                store.ensureDir()
+                try? FileManager.default.moveItem(at: store.snapURL, to: store.dir.appendingPathComponent("backups/snapshot-broken-\(f.string(from: Date())).json"))
+                snap = base.snap ?? Snapshot(created: stamp(), active: false, items: [:])
+            case .none: snap = base.snap ?? Snapshot(created: stamp(), active: false, items: [:])
+            }
             snap.active = false
             snap.lastNormal = stamp()
             try? store.write(snap)
         }
-        store.log("NORMAL START \(o.aborted ? "aborted, nothing changed" : "\(o.changed) changed, \(o.failed.count) failed")")
-        if !o.aborted { o.lines = summary("NORMAL START", o, total: changes.count, verb: "switched") }
+        store.log("FULL START \(o.aborted ? "aborted, nothing changed" : "\(o.changed) changed, \(o.failed.count) failed")")
+        if !o.aborted {
+            o.lines = summary("FULL START", o, total: changes.count, verb: "switched back")
+            if base.from != "snapshot.json" { o.lines.append("Restored from \(base.from) (snapshot.json was missing or broken).") }
+        }
         return o
     }
 
@@ -855,20 +990,24 @@ final class Engine {
         if o.failed.isEmpty {
             var c = store.choices(); c[key] = on; store.saveChoices(c)
             store.log("choice \(key) = \(on)")
-            o.lines.insert("\(i.name): \(on ? "on" : "off") from the next start (your choice, kept in both modes).", at: 0)
+            o.lines = ["\(i.name): \(on ? "on" : "off") from the next start (your choice, kept in both modes)."] + o.lines
         } else {
             o.lines.insert("\(i.name) not changed: \(o.failed.joined(separator: ", ")).", at: 0)
         }
         return o
     }
 
-    /// Test mode only: what CLEAN or NORMAL would run on the REAL items, written next to the test state, never run.
-    func writeWouldRun(_ s: ScanResult, clean: Bool, snap: Snapshot? = nil) {
-        var lines: [String] = ["# \(APP_NAME) v\(VERSION) test mode, \(stamp()): what \(clean ? "CLEAN START" : "NORMAL START") would run on the real items. NOT RUN."]
+    /// Test mode only: what CLEAN or FULL would run on the REAL items, written next to the test state, never run.
+    /// In test mode the real base is read from the REAL state folder, so would-run-full.sh shows what FULL START will do
+    /// on this Mac.
+    func writeWouldRun(_ s: ScanResult, clean: Bool, base: Base?) {
+        var lines: [String] = ["# \(APP_NAME) v\(VERSION) test mode, \(stamp()): what \(clean ? "CLEAN START" : "FULL START") would run on the real items. NOT RUN."]
+        let realBase = clean ? nil : Engine.realBase()
+        if let b = realBase { lines.append("# restoring from \(b.from) in the real state folder; switched off by this app and never back: \(b.leftOff.count)") }
         var sys: [Change] = []
         for var i in s.items where i.switchable && i.locked {
             i.locked = false
-            let target = self.target(i, clean: clean, was: snap?.items[i.id]?.wasOn)
+            let target = self.target(i, clean: clean, base: realBase)
             if i.keep { lines.append("# KEPT ON (iLok / PACE), never disabled: \(i.mech == .system ? "system" : "gui")/\(i.label) is \(i.on ? "on" : "OFF") now" + (i.on ? "" : "; this press switches it ON")) }
             guard i.on != target else { continue }
             switch i.mech {
@@ -882,6 +1021,19 @@ final class Engine {
             lines.append("# one administrator prompt, through: do shell script \"…\" with administrator privileges")
             lines.append(rootCommand(sys))
         }
-        try? (lines.joined(separator: "\n") + "\n").write(to: store.dir.appendingPathComponent("would-run-\(clean ? "clean" : "normal").sh"), atomically: true, encoding: .utf8)
+        try? (lines.joined(separator: "\n") + "\n").write(to: store.dir.appendingPathComponent("would-run-\(clean ? "clean" : "full").sh"), atomically: true, encoding: .utf8)
+    }
+
+    /// The real state folder's restore base (read only), for would-run-full.sh in test mode.
+    static func realBase() -> Base {
+        let support = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/\(APP_NAME)")
+        let st = Store(dir: support)
+        let off = Set(st.ledger().filter { !$0.value }.keys)
+        switch st.readSnapshot() {
+        case .ok(let s): return Base(snap: s, from: "snapshot.json", leftOff: off)
+        default:
+            if let found = st.newestBackup() { var b = found.0; b.active = st.lastPressWasClean(); return Base(snap: b, from: found.1, leftOff: off) }
+            return Base(snap: nil, from: "log.txt", leftOff: off)
+        }
     }
 }
